@@ -18,7 +18,7 @@ except ImportError as e:
 
 # --- Configuration ---
 # TODO: Update these paths according to your environment
-MODEL_PATH = "fsrcnn_x4-T91-97a30bfb.pth.tar"  # Path to your .pth.tar model file
+MODEL_PATH = "/kaggle/input/fsrcnn-model-weights/fsrcnn_x4-T91-97a30bfb.pth.tar"  # Path to your .pth.tar model file
 UPSCALE_FACTOR = 4  # From model name "fsrcnn_x4..."
 
 # Example Kaggle paths (modify if needed):
@@ -27,9 +27,9 @@ UPSCALE_FACTOR = 4  # From model name "fsrcnn_x4..."
 # SR_OUTPUT_DIR = "/kaggle/working/sr_output_images"
 
 # Example local paths (MODIFY THESE):
-LR_IMAGE_DIR = "./data/Set5/LRbicx4"
-HR_IMAGE_DIR = "./data/Set5/HR"
-SR_OUTPUT_DIR = "./results/Set5_FSRCNN_x4_inference"
+LR_IMAGE_DIR = "/kaggle/input/updated-dataset/dataset/test/LR"
+HR_IMAGE_DIR = "/kaggle/input/updated-dataset/dataset/test/HR"
+SR_OUTPUT_DIR = "/kaggle/output/output_sr"
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SAVE_SR_IMAGES = True  # Set to False if you don't want to save Super-Resolved images
