@@ -16,7 +16,7 @@ except ImportError as e:
     exit(1)
 # --- Configuration ---
 # : Update these paths according to your Kaggle environment or local setup
-MODEL_PATH = "fsrcnn_x4-T91-97a30bfb.pth.tar"  # Path to your .pth.tar model file
+MODEL_PATH = "/kaggle/input/fsrcnn-model-weights/fsrcnn_x4-T91-97a30bfb.pth.tar"  # Path to your .pth.tar model file
 UPSCALE_FACTOR = 4  # The model filename "fsrcnn_x4" suggests x4
 
 # Example Kaggle paths:
