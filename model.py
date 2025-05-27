@@ -29,32 +29,32 @@ class FSRCNN(nn.Module):
         super(FSRCNN, self).__init__()
         # Feature extraction layer.
         self.feature_extraction = nn.Sequential(
-            nn.Conv2d(1, 56, (3, 3), (1, 1), (1, 1)),
-            nn.PReLU(56)
+            nn.Conv2d(1, 64, (3, 3), (1, 1), (1, 1)),
+            nn.PReLU(64)
         )
 
         # Shrinking layer.
         self.shrink = nn.Sequential(
-            nn.Conv2d(56, 12, (1, 1), (1, 1), (0, 0)),
-            nn.PReLU(12)
+            nn.Conv2d(64, 16, (1, 1), (1, 1), (0, 0)),
+            nn.PReLU(16)
         )
 
         # Mapping layer.
         self.map = nn.Sequential(
-            nn.Conv2d(12, 12, (3, 3), (1, 1), (1, 1)),
-            nn.PReLU(12),
-            nn.Conv2d(12, 12, (3, 3), (1, 1), (1, 1)),
-            nn.PReLU(12),
-            nn.Conv2d(12, 12, (3, 3), (1, 1), (1, 1)),
-            nn.PReLU(12),
-            nn.Conv2d(12, 12, (3, 3), (1, 1), (1, 1)),
-            nn.PReLU(12)
+            nn.Conv2d(16, 16, (3, 3), (1, 1), (1, 1)),
+            nn.PReLU(16),
+            nn.Conv2d(16, 16, (3, 3), (1, 1), (1, 1)),
+            nn.PReLU(16),
+            nn.Conv2d(16, 16, (3, 3), (1, 1), (1, 1)),
+            nn.PReLU(16),
+            nn.Conv2d(16, 16, (3, 3), (1, 1), (1, 1)),
+            nn.PReLU(16)
         )
 
         # Expanding layer.
         self.expand = nn.Sequential(
-            nn.Conv2d(12, 56, (1, 1), (1, 1), (0, 0)),
-            nn.PReLU(56)
+            nn.Conv2d(16, 64, (1, 1), (1, 1), (0, 0)),
+            nn.PReLU(64)
         )
 
         # Deconvolution layer.
