@@ -18,6 +18,7 @@ import cv2
 import numpy as np
 import torch
 from natsort import natsorted
+from skimage.metrics import structural_similarit as ssim
 
 import config
 import imgproc
@@ -42,6 +43,7 @@ def main() -> None:
         model.half()
 
     total_psnr = 0.0
+    total_ssim = 0.0
     
     # Use config.TEST_LR_DIR and config.TEST_HR_DIR
     lr_image_files = natsorted([os.path.join(config.TEST_LR_DIR, f) for f in os.listdir(config.TEST_LR_DIR) if os.path.isfile(os.path.join(config.TEST_LR_DIR, f))])
@@ -108,12 +110,96 @@ def main() -> None:
         total_files_processed +=1
         print(f"PSNR for {base_name}: {current_psnr:4.2f}dB")
 
+        sr_y_numpy = sr_y_tensor.squeeze().cpu().numpy()
+        hr_y_numpy = hr_y_tensor_cropped.squeeze().cpu().numpy()
+
+        # Ensure images are properly clipped if there's any numerical instability (sr_y_tensor and config.TEST_HR_DIR
+    lr_image_files = natsorted([os.path.join(config.TEST_LR_DIR, f) for f in os.listdir(config.TEST_LR_DIR) if os.path.isfile(os.path.join(config.TEST_LR_DIR, f))])
+    
+    if not lr_image_files:
+        print(f"No LR images found in {config.TEST_LR_DIR}")
+        return
+
+    total_files_processed = 0
+
+    for lr_image_path in lr_image_files:
+        base_name = os.path.basename(lr_image_path)
+        hr_image_path = os.path.join(config.TEST_HR_DIR, base_name) # Assumes HR has same name
+        sr_image_path = os.path.join(config.SR_TEST_OUTPUT_DIR, base_name)
+
+        if not os.path.exists(hr_image_path):
+            print(f"Warning: Corresponding HR image not found for {lr_image_path}. Skipping.")
+            continue
+
+        print(f"Processing `{os.path.abspath(lr_image_path)}`...")
+        lr_image_bgr = cv2.imread(lr_image_path).astype(np.float32) / 255.0
+        hr_image_bgr = cv2.imread(hr_image_path).astype(np.float32) / 255.0
+
+        if lr_image_bgr is None:
+            print(f"Warning: Could not read LR image {lr_image_path}. Skipping.")
+            continue
+        if hr_image_bgr is None:
+            print(f"Warning: Could not read HR image {hr_image_path}. Skipping.")
+            continue
+        
+        # Extract Y channel for processing
+        lr_y_image = imgproc.bgr2ycbcr(lr_image_bgr, use_y_channel=True)
+        hr_y_image = imgproc.bgr2ycbcr(hr_image_bgr, use_y_channel=True)
+
+        lr_y_tensor = imgproc.image2tensor(lr_y_image, range_norm=False, half=use_half_precision_inference).to(config.DEVICE).unsqueeze_(0)
+        
+        with torch.no_grad():
+            sr_y_tensor = model(lr_y_tensor)
+        
+        # Ensure sr_y_tensor is float for clamping, PSNR, and saving operations
+        sr_y_tensor = sr_y_tensor.float().clamp_(0.0, 1.0)
+
+        # Calculate PSNR on Y channel
+        hr_y_tensor_orig = imgproc.image2tensor(hr_y_image, range_norm=False, half=False).to(config.DEVICE).unsqueeze_(0)
+        
+        h_sr, w_sr = sr_y_tensor.shape[2], sr_y_tensor.shape[3]
+
+        if hr_y_tensor_orig.shape[2] != h_sr or hr_y_tensor_orig.shape[3] != w_sr:
+            hr_y_tensor_cropped = hr_y_tensor_orig[:, :, :h_sr, :w_sr]
+        else:
+            hr_y_tensor_cropped = hr_y_tensor_orig
+            
+        mse = torch.mean((sr_y_tensor - hr_y_tensor_cropped) ** 2)
+        if mse.item() == 0:
+            current_psnr = float('inf')
+        else:
+            psnr_tensor = 10. * torch.log10(1.0 / mse)
+            current_psnr = psnr_tensor.item()
+        total_psnr += current_psnr
+        
+        # Calculate SSIM on Y channel
+        # Convert tensors to NumPy arrays (H, W) format, range [0, 1]
+        sr_y_np = sr_y_tensor.squeeze().cpu().numpy()
+        hr_y_np_cropped = hr_y_tensor_cropped.squeeze().cpu().numpy()
+
+        # Determine win_size for SSIM
+        # It must be odd and less than or equal to the image dimensions.
+        # We choose the smaller of 7 or the smallest image dimension.
+        win_s = min(7, hr_y_np_cropped.shape[0], hr_y_np_cropped.shape[1])
+        if win_s % 2 == 0:  # Ensure win_size is odd
+            win_s -= 1
+        
+        current_ssim = 0.0
+        if win_s < 1: # win_size must be positive. (e.g. if min_dim was 0 or 1 and made even)
+            print(f"Warning: Effective win_size ({win_s}) is too small for image {base_name} with shape {hr_y_np_cropped.shape}. Setting SSIM to 0.0.")
+        else:
+            # SSIM data_range is 1.0 as images are normalized to [0, 1]
+            # For 2D grayscale images, channel_axis=None (default) or multichannel=False
+            current_ssim = ssim(hr_y_np_cropped, sr_y_np, win_size=win_s, data_range=1.0) 
+        total_ssim += current_ssim
+
+        total_files_processed +=1
+        print(f"PSNR: {current_psnr:4.2f}dB, SSIM: {current_ssim:.4f} for {base_name}")
+
         # Save SR image (reconstruct with Cb,Cr from HR for color output)
-        sr_y_image_numpy = imgproc.tensor2image(sr_y_tensor.cpu(), range_norm=False, half=False) # Convert to numpy, ensure full precision
+        sr_y_image_numpy = imgproc.tensor2image(sr_y_tensor.cpu(), range_norm=False, half=False)
         sr_y_image_numpy_float = sr_y_image_numpy.astype(np.float32) / 255.0
         
-        # Get Cb, Cr channels from the original HR image (or upsampled LR if preferred, but HR is usually better)
-        # Resize them to match the SR Y channel's dimensions if FSRCNN output size slightly differs
         _, hr_cb_orig, hr_cr_orig = cv2.split(imgproc.bgr2ycbcr(hr_image_bgr, use_y_channel=False))
         
         target_h, target_w = sr_y_image_numpy_float.shape[:2]
@@ -127,12 +213,42 @@ def main() -> None:
         sr_ycbcr_image = cv2.merge([sr_y_image_numpy_float, hr_cb_resized, hr_cr_resized])
         sr_bgr_image = imgproc.ycbcr2bgr(sr_ycbcr_image)
         cv2.imwrite(sr_image_path, sr_bgr_image * 255.0)
+        sr_y_numpy = np.clip(sr_y_numpy, 0.0, 1.0)
+        hr_y_numpy = np.clip(hr_y_numpy, 0.0, 1.0)
+        
+        # Determine a robust win_size for SSIM
+        win_size = min(7, sr_y_numpy.shape[0], sr_y_numpy.shape[1])
+        if win_size % 2 == 0: # Ensure win_size is odd
+            win_size -= 1
+        
+        current_ssim = 0.0 # Default in case of issues
+        if win_size >= 1: # ssim requires win_size >= 1, practically >=3 for good results
+            try:
+                current_ssim = ssim(hr_y_numpy, sr_y_numpy, 
+                                                     data_range=1.0, 
+                                                     win_size=win_size)
+            except Exception as e:
+                print(f"Could not calculate SSIM for {base_name} (win_size={win_size}): {e}. Setting SSIM to 0.")
+        else: # This case should ideally not be reached if images have H,W >=1
+            print(f"SSIM win_size for {base_name} is < 1 ({win_size}). Setting SSIM to 0.")
+
+        total_ssim += current_ssim
+        total_files_processed +=1
+        print(f"Metrics for {base_name}: PSNR: {current_psnr:4.2f}dB, SSIM: {current_ssim:.4f}")
+
+        # Save SR image (reconstruct with Cb,Cr from HR for color output)
+        sr_y_image_numpy_for_save = imgproc.tensor2image(sr_y_tensor.cpu(), range_norm=False, half=False) # Convert to numpy uint8 [0,255]
+        sr_y_image_numpy_float = sr_y_image_numpy_for_save.astype(np.float32) / 255.0 # Back to float [0,1] for merging
+        
+        # Get Cb, Cr channels from the original HR image_path, sr_bgr_image * 255.0)
 
     if total_files_processed > 0:
         avg_psnr = total_psnr / total_files_processed
+        avg_ssim = total_ssim / total_files_processed # Calculate average SSIM
         print(f"\nAverage PSNR over {total_files_processed} images: {avg_psnr:4.2f}dB.")
+        print(f"Average SSIM over {total_files_processed} images: {avg_ssim:.4f}.") # Print average SSIM
     else:
-        print("\nNo images were processed successfully to calculate PSNR.")
+        print("\nNo images were processed successfully to calculate PSNR/SSIM.")
 
 
 if __name__ == "__main__":
