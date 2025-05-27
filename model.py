@@ -35,25 +35,25 @@ class FSRCNN(nn.Module):
 
         # Shrinking layer.
         self.shrink = nn.Sequential(
-            nn.Conv2d(64, 16, (1, 1), (1, 1), (0, 0)),
-            nn.PReLU(16)
+            nn.Conv2d(64, 12, (1, 1), (1, 1), (0, 0)),
+            nn.PReLU(12)
         )
 
         # Mapping layer.
         self.map = nn.Sequential(
-            nn.Conv2d(16, 16, (3, 3), (1, 1), (1, 1)),
-            nn.PReLU(16),
-            nn.Conv2d(16, 16, (3, 3), (1, 1), (1, 1)),
-            nn.PReLU(16),
-            nn.Conv2d(16, 16, (3, 3), (1, 1), (1, 1)),
-            nn.PReLU(16),
-            nn.Conv2d(16, 16, (3, 3), (1, 1), (1, 1)),
-            nn.PReLU(16)
+            nn.Conv2d(12, 12, (3, 3), (1, 1), (1, 1)),
+            nn.PReLU(12),
+            nn.Conv2d(12, 12, (3, 3), (1, 1), (1, 1)),
+            nn.PReLU(12),
+            nn.Conv2d(12, 12, (3, 3), (1, 1), (1, 1)),
+            nn.PReLU(12),
+            nn.Conv2d(12, 12, (3, 3), (1, 1), (1, 1)),
+            nn.PReLU(12)
         )
 
         # Expanding layer.
         self.expand = nn.Sequential(
-            nn.Conv2d(16, 64, (1, 1), (1, 1), (0, 0)),
+            nn.Conv2d(12, 64, (1, 1), (1, 1), (0, 0)),
             nn.PReLU(64)
         )
 
