@@ -37,8 +37,7 @@ The primary changes made to the original codebase include:
 The main Python scripts involved in this modified project are:
 *   `model.py`: Defines the FSRCNN neural network architecture.
 *   `train.py`: Handles the model training loop, including data loading, optimization, loss calculation, metric evaluation on validation sets, and model checkpointing.
-*   `validate.py`: Primarily contains the logic for model evaluation (PSNR, SSIM) which is called from `train.py`. It also forms the basis for the standalone `inferrence.py`.
-*   `inferrence.py`: A standalone script for running inference with a pre-trained model on a test dataset and saving the super-resolved images.
+*   `validate.py`: Primarily contains the logic for model evaluation (PSNR, SSIM) which is called from `train.py`. 
 *   `dataset.py`: Contains PyTorch `Dataset` classes for loading and preprocessing training, validation, and test image pairs.
 *   `imgproc.py`: Provides utility functions for image processing tasks such as color space conversion (BGR to YCbCr and vice-versa), image-to-tensor conversions, and data augmentation (cropping, flipping, rotation).
 *   `config.py`: A centralized configuration file for managing dataset paths, model hyperparameters (like `UPSCALE_FACTOR`, `IMAGE_SIZE`), training parameters (`BATCH_SIZE`, `EPOCHS`), and output directories.
@@ -73,16 +72,6 @@ The main Python scripts involved in this modified project are:
         tensorboard --logdir samples/logs
         ```
         (Note: The `LOGS_DIR` in `config.py` determines the actual log path.)
-
-5.  **Inference:**
-    *   After training, a model (e.g., `best.pth.tar`) will be saved in the directory specified by `RESULTS_SAVE_DIR`.
-    *   Update the `MODEL_PATH` in `inferrence.py` to point to your trained model file.
-    *   Specify the `LR_IMAGE_DIR`, `HR_IMAGE_DIR` (for metrics), and `SR_OUTPUT_DIR` in `inferrence.py`.
-    *   Run the inference script:
-        ```bash
-        python inferrence.py
-        ```
-    *   Super-resolved images will be saved to the `SR_OUTPUT_DIR`.
 
 ## Results Achieved
 
