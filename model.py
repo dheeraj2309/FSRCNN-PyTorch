@@ -29,13 +29,13 @@ class FSRCNN(nn.Module):
         super(FSRCNN, self).__init__()
         # Feature extraction layer.
         self.feature_extraction = nn.Sequential(
-            nn.Conv2d(1, 64, (3, 3), (1, 1), (1, 1)),
-            nn.PReLU(64)
+            nn.Conv2d(1, 128, (5, 5), (1, 1), (1, 1)),
+            nn.PReLU(128)
         )
 
         # Shrinking layer.
         self.shrink = nn.Sequential(
-            nn.Conv2d(64, 12, (1, 1), (1, 1), (0, 0)),
+            nn.Conv2d(128, 12, (1, 1), (1, 1), (0, 0)),
             nn.PReLU(12)
         )
 
@@ -55,12 +55,12 @@ class FSRCNN(nn.Module):
 
         # Expanding layer.
         self.expand = nn.Sequential(
-            nn.Conv2d(12, 64, (1, 1), (1, 1), (0, 0)),
-            nn.PReLU(64)
+            nn.Conv2d(12, 128, (1, 1), (1, 1), (0, 0)),
+            nn.PReLU(128)
         )
 
         # Deconvolution layer.
-        self.deconv = nn.ConvTranspose2d(64, 1, (9, 9), (upscale_factor, upscale_factor), (4, 4), (upscale_factor - 1, upscale_factor - 1))
+        self.deconv = nn.ConvTranspose2d(128, 1, (9, 9), (upscale_factor, upscale_factor), (4, 4), (upscale_factor - 1, upscale_factor - 1))
 
         # Initialize model weights.
         self._initialize_weights()
