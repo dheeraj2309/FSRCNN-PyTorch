@@ -49,6 +49,8 @@ class FSRCNN(nn.Module):
             nn.PReLU(16),
             nn.Conv2d(16, 16, (3, 3), (1, 1), (1, 1)),
             nn.PReLU(16)
+            nn.Conv2d(16, 16, (3, 3), (1, 1), (1, 1)),
+            nn.PReLU(16)
         )
 
         # Expanding layer.
