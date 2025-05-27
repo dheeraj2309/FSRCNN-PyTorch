@@ -15,7 +15,6 @@
 import os
 import shutil
 import time
-import matplotlib.pyplot as plt
 from enum import Enum
 
 import torch
@@ -24,6 +23,9 @@ from torch import optim
 from torch.cuda import amp
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+
+import numpy as np
+from skimage.metrics import structural_similarity
 
 import config
 from dataset import CUDAPrefetcher
@@ -68,37 +70,23 @@ def main():
     else:
         print("No checkpoint specified. Training from scratch.")
 
-    # Create a folder of super-resolution experiment results
-    
-
     # Create training process log file
     writer = SummaryWriter(log_dir=config.LOGS_DIR) # Use LOGS_DIR from config
 
     scaler = amp.GradScaler(enabled=config.DEVICE.type == 'cuda') # Enable scaler only for CUDA
 
-    epoch_numbers_list = []
-    train_losses_list = []
-    train_psnrs_list = []
-    valid_psnrs_list = []
-    test_psnrs_list = []
-
     for epoch in range(config.START_EPOCH, config.EPOCHS):
         # Train for one epoch
-        avg_train_loss, avg_train_psnr = train(model, train_prefetcher, psnr_criterion, pixel_criterion, optimizer, epoch, scaler, writer)
+        # avg_train_loss, avg_train_psnr, avg_train_ssim (return values not stored as plotting is removed)
+        train(model, train_prefetcher, psnr_criterion, pixel_criterion, optimizer, epoch, scaler, writer)
         
         # Validate on validation set
-        valid_psnr = validate(model, valid_prefetcher, psnr_criterion, epoch, writer, "Valid")
+        # valid_psnr, valid_ssim (return values not stored as plotting is removed)
+        validate(model, valid_prefetcher, psnr_criterion, epoch, writer, "Valid")
         
         # Validate on test set
-        test_psnr = validate(model, test_prefetcher, psnr_criterion, epoch, writer, "Test")
+        test_psnr, _ = validate(model, test_prefetcher, psnr_criterion, epoch, writer, "Test") # test_ssim also not stored
         print("\n")
-
-        # ADDED: Store metrics for this epoch
-        epoch_numbers_list.append(epoch + 1)
-        train_losses_list.append(avg_train_loss)
-        train_psnrs_list.append(avg_train_psnr)
-        valid_psnrs_list.append(valid_psnr)
-        test_psnrs_list.append(test_psnr)
 
         is_best = test_psnr > best_psnr # Using test_psnr to determine best model as per original logic
         best_psnr = max(test_psnr, best_psnr)
@@ -118,9 +106,8 @@ def main():
                             os.path.join(config.RESULTS_SAVE_DIR, "last.pth.tar"))
     
     writer.close()
+    print("Training complete. Metrics logged to TensorBoard and console.")
 
-    # ADDED: Call plotting function after training loop
-    plot_training_results(epoch_numbers_list, train_losses_list, train_psnrs_list, valid_psnrs_list, test_psnrs_list)
 
 def load_dataset() -> tuple[CUDAPrefetcher, CUDAPrefetcher, CUDAPrefetcher]:
     # Load train, test and valid datasets
@@ -194,13 +181,15 @@ def define_optimizer(model : nn.Module) -> optim.SGD:
     return optimizer
 
 
-def train(model, train_prefetcher, psnr_criterion, pixel_criterion, optimizer, epoch, scaler, writer) -> tuple[float, float]:
+def train(model, train_prefetcher, psnr_criterion, pixel_criterion, optimizer, epoch, scaler, writer) -> tuple[float, float, float]:
     batches = len(train_prefetcher)
     batch_time = AverageMeter("Time", ":6.3f")
     data_time = AverageMeter("Data", ":6.3f")
     losses = AverageMeter("Loss", ":6.6f")
     psnres = AverageMeter("PSNR", ":4.2f")
-    progress = ProgressMeter(batches, [batch_time, data_time, losses, psnres], prefix=f"Epoch: [{epoch + 1}]")
+    ssimes = AverageMeter("SSIM", ":.4f") # Added SSIM meter
+
+    progress = ProgressMeter(batches, [batch_time, data_time, losses, psnres, ssimes], prefix=f"Epoch: [{epoch + 1}]")
 
     model.train()
     batch_index = 0
@@ -226,29 +215,62 @@ def train(model, train_prefetcher, psnr_criterion, pixel_criterion, optimizer, e
         losses.update(loss.item(), lr.size(0))
         psnres.update(psnr.item(), lr.size(0))
 
+        # Calculate SSIM
+        sr_np = sr.detach().cpu().numpy()
+        hr_np = hr.detach().cpu().numpy()
+        batch_ssim_sum = 0
+        for i in range(sr_np.shape[0]): # Iterate over batch
+            sr_img_chw = sr_np[i]
+            hr_img_chw = hr_np[i]
+            
+            # Assuming images are normalized to [0, 1]
+            # Convert (C,H,W) to (H,W,C) for skimage if color, or (H,W) if grayscale
+            if sr_img_chw.shape[0] == 1: # Grayscale image
+                sr_img_hw = np.squeeze(sr_img_chw, axis=0)
+                hr_img_hw = np.squeeze(hr_img_chw, axis=0)
+                # Clamp values to [0, 1] to avoid potential issues with ssim calculation if model output is slightly outside this range
+                sr_img_hw = np.clip(sr_img_hw, 0, 1)
+                hr_img_hw = np.clip(hr_img_hw, 0, 1)
+                s = structural_similarity(hr_img_hw, sr_img_hw, data_range=1.0, win_size=min(7, hr_img_hw.shape[0], hr_img_hw.shape[1]))
+            else: # Color image
+                sr_img_hwc = np.transpose(sr_img_chw, (1, 2, 0))
+                hr_img_hwc = np.transpose(hr_img_chw, (1, 2, 0))
+                # Clamp values to [0, 1]
+                sr_img_hwc = np.clip(sr_img_hwc, 0, 1)
+                hr_img_hwc = np.clip(hr_img_hwc, 0, 1)
+                s = structural_similarity(hr_img_hwc, sr_img_hwc, data_range=1.0, multichannel=True, channel_axis=2, win_size=min(7, hr_img_hwc.shape[0], hr_img_hwc.shape[1]))
+            batch_ssim_sum += s
+        current_batch_avg_ssim = batch_ssim_sum / sr_np.shape[0]
+        ssimes.update(current_batch_avg_ssim, lr.size(0))
+
+
         batch_time.update(time.time() - end)
         end = time.time()
 
         if batch_index % config.PRINT_FREQUENCY == 0:
-            writer.add_scalar("Train/Loss_batch", loss.item(), batch_index + epoch * batches + 1) # Renamed for clarity
+            writer.add_scalar("Train/Loss_batch", loss.item(), batch_index + epoch * batches + 1)
+            writer.add_scalar("Train/PSNR_batch", psnr.item(), batch_index + epoch * batches + 1) # Added
+            writer.add_scalar("Train/SSIM_batch", current_batch_avg_ssim, batch_index + epoch * batches + 1) # Added
             progress.display(batch_index)
 
         batch_data = train_prefetcher.next()
         batch_index += 1
     
-    # Log epoch-level average training loss and PSNR to TensorBoard
+    # Log epoch-level average training metrics to TensorBoard
     if writer is not None:
         writer.add_scalar("Train/EpochAvgLoss", losses.avg, epoch + 1)
         writer.add_scalar("Train/EpochAvgPSNR", psnres.avg, epoch + 1)
+        writer.add_scalar("Train/EpochAvgSSIM", ssimes.avg, epoch + 1) # Added
     
-    # Return average loss and PSNR for this training epoch
-    return losses.avg, psnres.avg
+    # Return average loss, PSNR, and SSIM for this training epoch
+    return losses.avg, psnres.avg, ssimes.avg
 
 
-def validate(model, data_prefetcher, psnr_criterion, epoch, writer, mode) -> float:
+def validate(model, data_prefetcher, psnr_criterion, epoch, writer, mode) -> tuple[float, float]:
     batch_time = AverageMeter("Time", ":6.3f", Summary.NONE)
-    psnres = AverageMeter(f"{mode} PSNR", ":4.2f", Summary.AVERAGE) # Use mode in name
-    progress = ProgressMeter(len(data_prefetcher), [batch_time, psnres], prefix=f"{mode}: ")
+    psnres = AverageMeter(f"{mode} PSNR", ":4.2f", Summary.AVERAGE)
+    ssimes = AverageMeter(f"{mode} SSIM", ":.4f", Summary.AVERAGE) # Added SSIM meter
+    progress = ProgressMeter(len(data_prefetcher), [batch_time, psnres, ssimes], prefix=f"{mode}: ")
 
     model.eval()
     data_prefetcher.reset()
@@ -274,6 +296,31 @@ def validate(model, data_prefetcher, psnr_criterion, epoch, writer, mode) -> flo
             
             psnres.update(psnr_val, lr.size(0))
 
+            # Calculate SSIM
+            sr_np = sr.detach().cpu().numpy()
+            hr_np = hr.detach().cpu().numpy()
+            batch_ssim_sum = 0
+            for i in range(sr_np.shape[0]): # Iterate over batch
+                sr_img_chw = sr_np[i]
+                hr_img_chw = hr_np[i]
+
+                if sr_img_chw.shape[0] == 1: # Grayscale
+                    sr_img_hw = np.squeeze(sr_img_chw, axis=0)
+                    hr_img_hw = np.squeeze(hr_img_chw, axis=0)
+                    sr_img_hw = np.clip(sr_img_hw, 0, 1)
+                    hr_img_hw = np.clip(hr_img_hw, 0, 1)
+                    s = structural_similarity(hr_img_hw, sr_img_hw, data_range=1.0, win_size=min(7, hr_img_hw.shape[0], hr_img_hw.shape[1]))
+                else: # Color
+                    sr_img_hwc = np.transpose(sr_img_chw, (1, 2, 0))
+                    hr_img_hwc = np.transpose(hr_img_chw, (1, 2, 0))
+                    sr_img_hwc = np.clip(sr_img_hwc, 0, 1)
+                    hr_img_hwc = np.clip(hr_img_hwc, 0, 1)
+                    s = structural_similarity(hr_img_hwc, sr_img_hwc, data_range=1.0, multichannel=True, channel_axis=2, win_size=min(7, hr_img_hwc.shape[0], hr_img_hwc.shape[1]))
+                batch_ssim_sum += s
+            current_batch_avg_ssim = batch_ssim_sum / sr_np.shape[0]
+            ssimes.update(current_batch_avg_ssim, lr.size(0))
+
+
             batch_time.update(time.time() - end)
             end = time.time()
 
@@ -285,59 +332,9 @@ def validate(model, data_prefetcher, psnr_criterion, epoch, writer, mode) -> flo
 
     progress.display_summary()
     writer.add_scalar(f"{mode}/PSNR", psnres.avg, epoch + 1)
-    return psnres.avg
+    writer.add_scalar(f"{mode}/SSIM", ssimes.avg, epoch + 1) # Added
+    return psnres.avg, ssimes.avg
 
-def plot_training_results(epochs, train_losses, train_psnrs, valid_psnrs, test_psnrs):
-    """
-    Plots training and validation/test metrics over epochs and saves the plot.
-    """
-    plt.figure(figsize=(18, 12)) # Adjusted figure size for better layout
-
-    # Plot 1: Training Loss
-    plt.subplot(2, 2, 1)
-    plt.plot(epochs, train_losses, label='Training Loss', color='red', linestyle='-', marker='o')
-    plt.title('Training Loss vs. Epochs')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.grid(True)
-
-    # Plot 2: Training PSNR
-    plt.subplot(2, 2, 2)
-    plt.plot(epochs, train_psnrs, label='Training PSNR', color='blue', linestyle='-', marker='o')
-    plt.title('Training PSNR vs. Epochs')
-    plt.xlabel('Epoch')
-    plt.ylabel('PSNR (dB)')
-    plt.legend()
-    plt.grid(True)
-
-    # Plot 3: Validation PSNR
-    plt.subplot(2, 2, 3)
-    plt.plot(epochs, valid_psnrs, label='Validation PSNR', color='green', linestyle='-', marker='s')
-    plt.title('Validation PSNR vs. Epochs')
-    plt.xlabel('Epoch')
-    plt.ylabel('PSNR (dB)')
-    plt.legend()
-    plt.grid(True)
-
-    # Plot 4: Test PSNR
-    plt.subplot(2, 2, 4) # Changed from 2,2,3 to 2,2,4
-    plt.plot(epochs, test_psnrs, label='Test PSNR', color='purple', linestyle='-', marker='^')
-    plt.title('Test PSNR vs. Epochs')
-    plt.xlabel('Epoch')
-    plt.ylabel('PSNR (dB)')
-    plt.legend()
-    plt.grid(True)
-
-    plt.tight_layout(pad=3.0) # Add some padding
-    
-    # Save the plot to the results directory
-    plot_filename = os.path.join(config.RESULTS_SAVE_DIR, "training_performance_plots.png")
-    try:
-        plt.savefig(plot_filename)
-        print(f"Training performance plots saved to '{plot_filename}'")
-    except Exception as e:
-        print(f"Error saving plot: {e}")
 # Copy form "https://github.com/pytorch/examples/blob/master/imagenet/main.py"
 class Summary(Enum):
     NONE = 0
@@ -375,7 +372,10 @@ class AverageMeter(object):
         if self.summary_type is Summary.NONE:
             fmtstr = ""
         elif self.summary_type is Summary.AVERAGE:
-            fmtstr = "{name} {avg:.2f}"
+            # Using a generic format for average, as specific precision for PSNR vs SSIM differs.
+            # The __str__ method handles specific formatting for live prints.
+            # For SSIM, this will show .2f in summary, but .4f in per-batch prints.
+            fmtstr = "{name} {avg:.3f}" # Adjusted to .3f as a compromise
         elif self.summary_type is Summary.SUM:
             fmtstr = "{name} {sum:.2f}"
         elif self.summary_type is Summary.COUNT:
