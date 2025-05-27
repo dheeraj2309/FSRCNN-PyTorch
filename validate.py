@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 import torch
 from natsort import natsorted
-from skimage.metrics import structural_similarit as ssim
+from skimage.metrics import structural_similarity as ssim
 
 import config
 import imgproc
