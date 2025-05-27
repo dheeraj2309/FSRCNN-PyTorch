@@ -1,119 +1,115 @@
-# FSRCNN-PyTorch
+# FSRCNN-PyTorch for Custom Super-Resolution Project
 
-## Overview
+**This repository is a fork of [Lornatang/FSRCNN-PyTorch](https://github.com/Lornatang/FSRCNN-PyTorch) and has been modified to work with a custom dataset and experiment with the FSRCNN architecture for an image super-resolution project.**
 
-This repository contains an op-for-op PyTorch reimplementation of [Accelerating the Super-Resolution Convolutional Neural Network](https://arxiv.org/abs/1608.00367v1).
+The core FSRCNN (Fast Super-Resolution Convolutional Neural Network) implementation from the original repository has been adapted to suit specific dataset requirements, and various hyperparameter tuning and architectural adjustments were explored.
 
-## Table of contents
+## Project Overview
 
-- [FSRCNN-PyTorch](#fsrcnn-pytorch)
-    - [Overview](#overview)
-    - [Table of contents](#table-of-contents)
-    - [About Accelerating the Super-Resolution Convolutional Neural Network](#about-accelerating-the-super-resolution-convolutional-neural-network)
-    - [Download weights](#download-weights)
-    - [Download datasets](#download-datasets)
-    - [Test](#test)
-    - [Train](#train)
-    - [Result](#result)
-    - [Credit](#credit)
-        - [Accelerating the Super-Resolution Convolutional Neural Network](#accelerating-the-super-resolution-convolutional-neural-network)
+The goal of this project was to:
+1.  Understand and implement the FSRCNN model for image super-resolution.
+2.  Adapt an existing PyTorch implementation to a custom dataset of Low-Resolution (LR) and High-Resolution (HR) image pairs.
+3.  Train the model, evaluate its performance using PSNR and SSIM metrics, and analyze the results.
+4.  Document the learning process, challenges faced, and potential areas for improvement.
 
-## About Accelerating the Super-Resolution Convolutional Neural Network
+This project served as a hands-on learning experience in deep learning for image processing, involving understanding existing codebases, debugging, and tailoring models to new data.
 
-If you're new to FSRCNN, here's an abstract straight from the paper:
+## Key Modifications from Original Repository
 
-As a successful deep model applied in image super-resolution (SR), the Super-Resolution Convolutional Neural Network (
-SRCNN) has demonstrated superior performance to the previous hand-crafted models either in speed and restoration quality. However, the high
-computational cost still hinders it from practical usage that demands real-time performance (
-24 fps). In this paper, we aim at accelerating the current SRCNN, and propose a compact hourglass-shape CNN structure for faster and better SR. We
-re-design the SRCNN structure mainly in three aspects. First, we introduce a deconvolution layer at the end of the network, then the mapping is
-learned directly from the original low-resolution image (without interpolation) to the high-resolution one. Second, we reformulate the mapping layer
-by shrinking the input feature dimension before mapping and expanding back afterwards. Third, we adopt smaller filter sizes but more mapping layers.
-The proposed model achieves a speed up of more than 40 times with even superior restoration quality. Further, we present the parameter settings that
-can achieve real-time performance on a generic CPU while still maintaining good performance. A corresponding transfer strategy is also proposed for
-fast training and testing across different upscaling factors.
+The primary changes made to the original codebase include:
 
-## Download weights
+*   **Dataset Handling (`dataset.py`, `config.py`):**
+    *   Modified to load pre-existing LR and HR image pairs directly from specified directories, instead of the original approach which might have involved on-the-fly downsampling for some use cases.
+    *   Adjusted to handle minor dimension mismatches between LR and HR pairs (e.g., by cropping HR images to ensure their dimensions are exact multiples of LR dimensions scaled by the `UPSCALE_FACTOR`). This was crucial for accurate metric calculation.
+    *   Configuration paths in `config.py` were updated to reflect the custom dataset structure and output directories.
+*   **Model Architecture (`model.py`):**
+    *   While the core FSRCNN structure (feature extraction, shrinking, mapping, expanding, deconvolution) was retained, parameters within these layers (number of filters, channels in the shrinking/mapping layers, depth of mapping layers, kernel sizes) were experimented with. For instance, one configuration explored involved 64 filters for feature extraction/expansion, 12 channels for the shrinking/mapping stages, and a depth of 6 for the mapping layers.
+*   **Training and Validation (`train.py`, `validate.py`):**
+    *   Scripts were updated to align with the modified dataset loading.
+    *   Calculation and logging of both PSNR and SSIM metrics (on the Y-channel) were ensured.
+    *   TensorBoard logging for losses, PSNR, and SSIM was integrated for monitoring.
+    *   The checkpointing strategy was maintained to save the best and last models.
+*   **Inference (`inferrence.py`):**
+    *   A dedicated inference script was adapted to load a trained model, process a directory of LR test images, and save the super-resolved outputs. It also calculates PSNR and SSIM against corresponding HR images.
+    *   Color image reconstruction was handled by super-resolving the Y-channel and then merging it with upscaled Cb and Cr channels from the HR image.
+*   **Code Refinements:** Various minor adjustments were made throughout the scripts to ensure compatibility with the custom dataset and to address issues encountered during experimentation, such as ensuring correct tensor types and handling potential edge cases in image processing.
 
-- [Google Driver](https://drive.google.com/drive/folders/17ju2HN7Y6pyPK2CC_AqnAfTOe9_3hCQ8?usp=sharing)
-- [Baidu Driver](https://pan.baidu.com/s/1yNs4rqIb004-NKEdKBJtYg?pwd=llot)
+## Project Structure
 
-## Download datasets
+The main Python scripts involved in this modified project are:
+*   `model.py`: Defines the FSRCNN neural network architecture.
+*   `train.py`: Handles the model training loop, including data loading, optimization, loss calculation, metric evaluation on validation sets, and model checkpointing.
+*   `validate.py`: Primarily contains the logic for model evaluation (PSNR, SSIM) which is called from `train.py`. It also forms the basis for the standalone `inferrence.py`.
+*   `inferrence.py`: A standalone script for running inference with a pre-trained model on a test dataset and saving the super-resolved images.
+*   `dataset.py`: Contains PyTorch `Dataset` classes for loading and preprocessing training, validation, and test image pairs.
+*   `imgproc.py`: Provides utility functions for image processing tasks such as color space conversion (BGR to YCbCr and vice-versa), image-to-tensor conversions, and data augmentation (cropping, flipping, rotation).
+*   `config.py`: A centralized configuration file for managing dataset paths, model hyperparameters (like `UPSCALE_FACTOR`, `IMAGE_SIZE`), training parameters (`BATCH_SIZE`, `EPOCHS`), and output directories.
+*   `setup.py`: Original setup script from the forked repository (may not be directly used for project execution unless packaging the modified version).
 
-Contains DIV2K, DIV8K, Flickr2K, OST, T91, Set5, Set14, BSDS100 and BSDS200, etc.
+## How to Use
 
-- [Google Driver](https://drive.google.com/drive/folders/1A6lzGeQrFMxPqJehK9s37ce-tPDj20mD?usp=sharing)
-- [Baidu Driver](https://pan.baidu.com/s/1o-8Ty_7q6DiS3ykLU09IVg?pwd=llot)
+1.  **Setup Environment:**
+    *   Clone this repository.
+    *   Install the necessary dependencies. A `requirements.txt` would be ideal, but common dependencies include:
+        ```bash
+        pip install torch torchvision torchaudio opencv-python scikit-image natsort numpy tensorboard
+        ```
 
-## Test
+2.  **Prepare Dataset:**
+    *   Organize your dataset according to the paths expected in `config.py`. Typically, this involves creating directories for training, validation, and testing, each with `HR` (High-Resolution) and `LR` (Low-Resolution) subdirectories.
+    *   Example: `dataset/train/HR`, `dataset/train/LR`, `dataset/test/HR`, `dataset/test/LR`.
+    *   Ensure image filenames in `HR` and `LR` correspond to each other.
 
-Modify the contents of the file as follows.
+3.  **Configure (`config.py`):**
+    *   Modify `BASE_DATA_PATH` in `config.py` to point to your root dataset directory.
+    *   Adjust other parameters like `UPSCALE_FACTOR`, `IMAGE_SIZE`, `BATCH_SIZE`, `EPOCHS`, `MODEL_LR` as per your requirements.
+    *   Verify output paths (`MODEL_SAVE_DIR`, `RESULTS_SAVE_DIR`, `LOGS_DIR`, `SR_TEST_OUTPUT_DIR`).
 
-- line 29: `upscale_factor` change to the magnification you need to enlarge.
-- line 31: `mode` change Set to valid mode.
-- line 67: `model_path` change weight address after training.
+4.  **Training:**
+    *   Execute the training script:
+        ```bash
+        python train.py
+        ```
+    *   Training progress, including loss, PSNR, and SSIM, can be monitored using TensorBoard. Launch it by navigating to your project directory and running (adjust log directory if needed):
+        ```bash
+        tensorboard --logdir samples/logs
+        ```
+        (Note: The `LOGS_DIR` in `config.py` determines the actual log path.)
 
-## Train
+5.  **Inference:**
+    *   After training, a model (e.g., `best.pth.tar`) will be saved in the directory specified by `RESULTS_SAVE_DIR`.
+    *   Update the `MODEL_PATH` in `inferrence.py` to point to your trained model file.
+    *   Specify the `LR_IMAGE_DIR`, `HR_IMAGE_DIR` (for metrics), and `SR_OUTPUT_DIR` in `inferrence.py`.
+    *   Run the inference script:
+        ```bash
+        python inferrence.py
+        ```
+    *   Super-resolved images will be saved to the `SR_OUTPUT_DIR`.
 
-Modify the contents of the file as follows.
+## Results Achieved
 
-- line 29: `upscale_factor` change to the magnification you need to enlarge.
-- line 31: `mode` change Set to train mode.
+Using the FSRCNN architecture, with experimental parameters (e.g., 64 feature extraction filters, 12 channels in shrink/map layers, 6 mapping layers), the following best performance metrics were observed on the Y-channel of the custom test dataset:
 
-If you want to load weights that you've trained before, modify the contents of the file as follows.
+*   **PSNR:** 19.98 dB
+*   **SSIM:** 0.457
 
-- line 47: `start_epoch` change number of training iterations in the previous round.
-- line 48: `resume` change weight address that needs to be loaded.
+While these results demonstrate a functioning super-resolution pipeline, they are modest compared to current state-of-the-art benchmarks, indicating potential for further improvement or dataset-specific challenges.
 
-## Result
+## Future Prospects
 
-Source of original paper results: https://arxiv.org/pdf/1608.00367v1.pdf
+Based on the project's outcomes and learnings, potential directions for future work include:
+*   **In-depth Data Analysis:** A more thorough examination of the custom dataset for characteristics that might hinder performance (e.g., noise, compression artifacts, specific content types).
+*   **Exploring Advanced Architectures:** Experimenting with more recent and powerful super-resolution models such as EDSR, RCAN, or Transformer-based models like SwinIR.
+*   **Transfer Learning:** Leveraging models pre-trained on larger, standard datasets (e.g., DIV2K) and fine-tuning them on the custom dataset.
+*   **Advanced Loss Functions:** Incorporating alternative loss functions like L1 loss, perceptual loss (using features from pre-trained classification networks), or adversarial loss (if moving towards GAN-based SR).
+*   **Systematic Hyperparameter Optimization:** Employing automated techniques like grid search, random search, or Bayesian optimization for more exhaustive hyperparameter tuning.
 
-In the following table, the value in `()` indicates the result of the project, and `-` indicates no test.
+## Original Repository Credits
 
-| Dataset | Scale |       PSNR       |
-|:-------:|:-----:|:----------------:|
-|  Set5   |   2   | 36.94(**37.09**) |
-|  Set5   |   3   | 33.06(**33.06**) |
-|  Set5   |   4   | 30.55(**30.66**) |
+This work is fundamentally based on the FSRCNN-PyTorch implementation by **Lornatang**. We acknowledge and appreciate their contribution to the open-source community.
+Please refer to the original repository for the base implementation and their detailed documentation:
+[https://github.com/Lornatang/FSRCNN-PyTorch](https://github.com/Lornatang/FSRCNN-PyTorch)
 
-Low Resolution / Super Resolution / High Resolution
-<span align="center"><img src="assets/result.png"/></span>
+## License
 
-## Credit
-
-### Accelerating the Super-Resolution Convolutional Neural Network
-
-_Chao Dong, Chen Change Loy, Xiaoou Tang_ <br>
-
-**Abstract** <br>
-As a successful deep model applied in image super-resolution (SR), the Super-Resolution Convolutional Neural Network (
-SRCNN) has demonstrated superior performance to the previous hand-crafted models either in speed and restoration quality. However, the high
-computational cost still hinders it from practical usage that demands real-time performance (
-24 fps). In this paper, we aim at accelerating the current SRCNN, and propose a compact hourglass-shape CNN structure for faster and better SR. We
-re-design the SRCNN structure mainly in three aspects. First, we introduce a deconvolution layer at the end of the network, then the mapping is
-learned directly from the original low-resolution image (without interpolation) to the high-resolution one. Second, we reformulate the mapping layer
-by shrinking the input feature dimension before mapping and expanding back afterwards. Third, we adopt smaller filter sizes but more mapping layers.
-The proposed model achieves a speed up of more than 40 times with even superior restoration quality. Further, we present the parameter settings that
-can achieve real-time performance on a generic CPU while still maintaining good performance. A corresponding transfer strategy is also proposed for
-fast training and testing across different upscaling factors.
-
-[[Paper]](https://arxiv.org/pdf/1608.00367v1.pdf) [[Author's implements(Caffe)]](https://drive.google.com/open?id=0B7tU5Pj1dfCMWjhhaE1HR3dqcGs)
-
-```bibtex
-@article{DBLP:journals/corr/DongLT16,
-  author    = {Chao Dong and
-               Chen Change Loy and
-               Xiaoou Tang},
-  title     = {Accelerating the Super-Resolution Convolutional Neural Network},
-  journal   = {CoRR},
-  volume    = {abs/1608.00367},
-  year      = {2016},
-  url       = {http://arxiv.org/abs/1608.00367},
-  eprinttype = {arXiv},
-  eprint    = {1608.00367},
-  timestamp = {Mon, 13 Aug 2018 16:47:56 +0200},
-  biburl    = {https://dblp.org/rec/journals/corr/DongLT16.bib},
-  bibsource = {dblp computer science bibliography, https://dblp.org}
-}
-```
+The modifications made in this fork are provided under the same license as the original repository (Apache License 2.0), unless explicitly stated otherwise.
