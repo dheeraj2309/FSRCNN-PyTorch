@@ -44,10 +44,10 @@ SR_TEST_OUTPUT_DIR = os.path.join(BASE_OUTPUT_PATH, "results", "test_output", EX
 VALIDATE_MODEL_PATH = os.path.join(RESULTS_SAVE_DIR, "best.pth.tar")
 
 # --- Training Parameters ---
-IMAGE_SIZE = 128      # High-resolution image patch size for cropping.
+IMAGE_SIZE = 64     # High-resolution image patch size for cropping.
                        # LR patch size will be IMAGE_SIZE // UPSCALE_FACTOR.
 BATCH_SIZE = 16
-EPOCHS = 150          # Number of epochs to train
+EPOCHS = 100        # Number of epochs to train
 START_EPOCH = 0        # Default starting epoch
 
 # Optimizer parameters
