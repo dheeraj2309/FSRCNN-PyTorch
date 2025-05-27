@@ -15,6 +15,7 @@
 import os
 import shutil
 import time
+import matplotlib.pyplot as plt
 from enum import Enum
 
 import torch
@@ -75,21 +76,38 @@ def main():
 
     scaler = amp.GradScaler(enabled=config.DEVICE.type == 'cuda') # Enable scaler only for CUDA
 
+    epoch_numbers_list = []
+    train_losses_list = []
+    train_psnrs_list = []
+    valid_psnrs_list = []
+    test_psnrs_list = []
+
     for epoch in range(config.START_EPOCH, config.EPOCHS):
-        train(model, train_prefetcher, psnr_criterion, pixel_criterion, optimizer, epoch, scaler, writer)
-        _ = validate(model, valid_prefetcher, psnr_criterion, epoch, writer, "Valid") # Validate on validation set
-        psnr = validate(model, test_prefetcher, psnr_criterion, epoch, writer, "Test")   # Validate on test set
+        # Train for one epoch
+        avg_train_loss, avg_train_psnr = train(model, train_prefetcher, psnr_criterion, pixel_criterion, optimizer, epoch, scaler, writer)
+        
+        # Validate on validation set
+        valid_psnr = validate(model, valid_prefetcher, psnr_criterion, epoch, writer, "Valid")
+        
+        # Validate on test set
+        test_psnr = validate(model, test_prefetcher, psnr_criterion, epoch, writer, "Test")
         print("\n")
 
-        is_best = psnr > best_psnr
-        best_psnr = max(psnr, best_psnr)
+        # ADDED: Store metrics for this epoch
+        epoch_numbers_list.append(epoch + 1)
+        train_losses_list.append(avg_train_loss)
+        train_psnrs_list.append(avg_train_psnr)
+        valid_psnrs_list.append(valid_psnr)
+        test_psnrs_list.append(test_psnr)
+
+        is_best = test_psnr > best_psnr # Using test_psnr to determine best model as per original logic
+        best_psnr = max(test_psnr, best_psnr)
 
         checkpoint_data = {
             "epoch": epoch + 1,
             "best_psnr": best_psnr,
             "state_dict": model.state_dict(),
             "optimizer": optimizer.state_dict(),
-            # "scheduler": scheduler.state_dict(), # If you add a scheduler
         }
         torch.save(checkpoint_data, os.path.join(config.MODEL_SAVE_DIR, f"epoch_{epoch + 1}.pth.tar"))
         if is_best:
@@ -98,7 +116,11 @@ def main():
         if (epoch + 1) == config.EPOCHS:
             shutil.copyfile(os.path.join(config.MODEL_SAVE_DIR, f"epoch_{epoch + 1}.pth.tar"), 
                             os.path.join(config.RESULTS_SAVE_DIR, "last.pth.tar"))
+    
     writer.close()
+
+    # ADDED: Call plotting function after training loop
+    plot_training_results(epoch_numbers_list, train_losses_list, train_psnrs_list, valid_psnrs_list, test_psnrs_list)
 
 def load_dataset() -> tuple[CUDAPrefetcher, CUDAPrefetcher, CUDAPrefetcher]:
     # Load train, test and valid datasets
@@ -172,67 +194,55 @@ def define_optimizer(model : nn.Module) -> optim.SGD:
     return optimizer
 
 
-def train(model, train_prefetcher, psnr_criterion, pixel_criterion, optimizer, epoch, scaler, writer) -> None:
-    # Calculate how many iterations there are under epoch
+def train(model, train_prefetcher, psnr_criterion, pixel_criterion, optimizer, epoch, scaler, writer) -> tuple[float, float]:
     batches = len(train_prefetcher)
-
     batch_time = AverageMeter("Time", ":6.3f")
     data_time = AverageMeter("Data", ":6.3f")
     losses = AverageMeter("Loss", ":6.6f")
     psnres = AverageMeter("PSNR", ":4.2f")
     progress = ProgressMeter(batches, [batch_time, data_time, losses, psnres], prefix=f"Epoch: [{epoch + 1}]")
 
-    # Put the generator in training mode
     model.train()
-
     batch_index = 0
-
-    # Calculate the time it takes to test a batch of data
     end = time.time()
-    # enable preload
     train_prefetcher.reset()
     batch_data = train_prefetcher.next()
-    while batch_data is not None:
-        # measure data loading time
-        data_time.update(time.time() - end)
 
+    while batch_data is not None:
+        data_time.update(time.time() - end)
         lr = batch_data["lr"].to(config.DEVICE, non_blocking=True)
         hr = batch_data["hr"].to(config.DEVICE, non_blocking=True)
 
-        # Initialize the generator gradient
         optimizer.zero_grad()
-
-        # Mixed precision training
         with amp.autocast(enabled=config.DEVICE.type == 'cuda'):
             sr = model(lr)
             loss = pixel_criterion(sr, hr)
 
-        # Gradient zoom
         scaler.scale(loss).backward()
-        # Update generator weight
         scaler.step(optimizer)
         scaler.update()
 
-        # measure accuracy and record loss
         psnr = 10. * torch.log10(1. / psnr_criterion(sr, hr))
         losses.update(loss.item(), lr.size(0))
         psnres.update(psnr.item(), lr.size(0))
 
-        # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
 
-        # Record training log information
         if batch_index % config.PRINT_FREQUENCY == 0:
-            # Writer Loss to file
-            writer.add_scalar("Train/Loss", loss.item(), batch_index + epoch * batches + 1)
+            writer.add_scalar("Train/Loss_batch", loss.item(), batch_index + epoch * batches + 1) # Renamed for clarity
             progress.display(batch_index)
 
-        # Preload the next batch of data
         batch_data = train_prefetcher.next()
-
-        # After a batch of data is calculated, add 1 to the number of batches
         batch_index += 1
+    
+    # Log epoch-level average training loss and PSNR to TensorBoard
+    if writer is not None:
+        writer.add_scalar("Train/EpochAvgLoss", losses.avg, epoch + 1)
+        writer.add_scalar("Train/EpochAvgPSNR", psnres.avg, epoch + 1)
+    
+    # Return average loss and PSNR for this training epoch
+    return losses.avg, psnres.avg
 
 
 def validate(model, data_prefetcher, psnr_criterion, epoch, writer, mode) -> float:
@@ -277,7 +287,57 @@ def validate(model, data_prefetcher, psnr_criterion, epoch, writer, mode) -> flo
     writer.add_scalar(f"{mode}/PSNR", psnres.avg, epoch + 1)
     return psnres.avg
 
+def plot_training_results(epochs, train_losses, train_psnrs, valid_psnrs, test_psnrs):
+    """
+    Plots training and validation/test metrics over epochs and saves the plot.
+    """
+    plt.figure(figsize=(18, 12)) # Adjusted figure size for better layout
 
+    # Plot 1: Training Loss
+    plt.subplot(2, 2, 1)
+    plt.plot(epochs, train_losses, label='Training Loss', color='red', linestyle='-', marker='o')
+    plt.title('Training Loss vs. Epochs')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.grid(True)
+
+    # Plot 2: Training PSNR
+    plt.subplot(2, 2, 2)
+    plt.plot(epochs, train_psnrs, label='Training PSNR', color='blue', linestyle='-', marker='o')
+    plt.title('Training PSNR vs. Epochs')
+    plt.xlabel('Epoch')
+    plt.ylabel('PSNR (dB)')
+    plt.legend()
+    plt.grid(True)
+
+    # Plot 3: Validation PSNR
+    plt.subplot(2, 2, 3)
+    plt.plot(epochs, valid_psnrs, label='Validation PSNR', color='green', linestyle='-', marker='s')
+    plt.title('Validation PSNR vs. Epochs')
+    plt.xlabel('Epoch')
+    plt.ylabel('PSNR (dB)')
+    plt.legend()
+    plt.grid(True)
+
+    # Plot 4: Test PSNR
+    plt.subplot(2, 2, 4) # Changed from 2,2,3 to 2,2,4
+    plt.plot(epochs, test_psnrs, label='Test PSNR', color='purple', linestyle='-', marker='^')
+    plt.title('Test PSNR vs. Epochs')
+    plt.xlabel('Epoch')
+    plt.ylabel('PSNR (dB)')
+    plt.legend()
+    plt.grid(True)
+
+    plt.tight_layout(pad=3.0) # Add some padding
+    
+    # Save the plot to the results directory
+    plot_filename = os.path.join(config.RESULTS_SAVE_DIR, "training_performance_plots.png")
+    try:
+        plt.savefig(plot_filename)
+        print(f"Training performance plots saved to '{plot_filename}'")
+    except Exception as e:
+        print(f"Error saving plot: {e}")
 # Copy form "https://github.com/pytorch/examples/blob/master/imagenet/main.py"
 class Summary(Enum):
     NONE = 0
