@@ -29,8 +29,6 @@ The primary changes made to the original codebase include:
     *   Calculation and logging of both PSNR and SSIM metrics (on the Y-channel) were ensured.
     *   TensorBoard logging for losses, PSNR, and SSIM was integrated for monitoring.
     *   The checkpointing strategy was maintained to save the best and last models.
-*   **Inference (`inferrence.py`):**
-    *   A dedicated inference script was adapted to load a trained model, process a directory of LR test images, and save the super-resolved outputs. It also calculates PSNR and SSIM against corresponding HR images.
     *   Color image reconstruction was handled by super-resolving the Y-channel and then merging it with upscaled Cb and Cr channels from the HR image.
 *   **Code Refinements:** Various minor adjustments were made throughout the scripts to ensure compatibility with the custom dataset and to address issues encountered during experimentation, such as ensuring correct tensor types and handling potential edge cases in image processing.
 
