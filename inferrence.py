@@ -62,6 +62,7 @@ def calculate_metrics(img_true_y, img_pred_y):
     return current_psnr, current_ssim
 
 def main():
+    global EVALUATE_PERFORMANCE, USE_HR_COLOR_CHANNELS # Allow modification
     print(f"Starting inference with the following settings:")
     print(f"  Model Weights: {MODEL_WEIGHTS_PATH}")
     print(f"  New LR Dataset: {NEW_LR_DATASET_DIR}")
@@ -83,7 +84,6 @@ def main():
     if (EVALUATE_PERFORMANCE or USE_HR_COLOR_CHANNELS) and not os.path.isdir(NEW_HR_DATASET_DIR):
         print(f"WARNING: New HR dataset directory not found at '{NEW_HR_DATASET_DIR}'. "
               "Will proceed without HR color channels and performance evaluation.")
-        global EVALUATE_PERFORMANCE, USE_HR_COLOR_CHANNELS # Allow modification
         EVALUATE_PERFORMANCE = False
         USE_HR_COLOR_CHANNELS = False
 
