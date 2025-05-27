@@ -33,6 +33,11 @@ from model import FSRCNN
 def main():
     # Initialize training to generate network evaluation indicators
     best_psnr = 0.0
+    # Create output directories if they don't exist
+    os.makedirs(config.MODEL_SAVE_DIR, exist_ok=True)
+    os.makedirs(config.RESULTS_SAVE_DIR, exist_ok=True)
+    os.makedirs(config.LOGS_DIR, exist_ok=True)
+
 
     train_prefetcher, valid_prefetcher, test_prefetcher = load_dataset()
     print("Load train dataset and valid dataset successfully.")
@@ -47,80 +52,83 @@ def main():
     print("Define all optimizer functions successfully.")
 
     print("Check whether the pretrained model is restored...")
-    if config.resume:
-        # Load checkpoint model
-        checkpoint = torch.load(config.resume, map_location=lambda storage, loc: storage)
-        # Restore the parameters in the training node to this point
-        config.start_epoch = checkpoint["epoch"]
-        best_psnr = checkpoint["best_psnr"]
-        # Load checkpoint state dict. Extract the fitted model weights
-        model_state_dict = model.state_dict()
-        new_state_dict = {k: v for k, v in checkpoint["state_dict"].items() if k in model_state_dict}
-        # Overwrite the pretrained model weights to the current model
-        model_state_dict.update(new_state_dict)
-        model.load_state_dict(model_state_dict)
-        # Load the optimizer model
-        optimizer.load_state_dict(checkpoint["optimizer"])
-        # Load the scheduler model
-        # scheduler.load_state_dict(checkpoint["scheduler"])
-        print("Loaded pretrained model weights.")
+    if config.RESUME_CHECKPOINT: # Use RESUME_CHECKPOINT from config
+        if os.path.isfile(config.RESUME_CHECKPOINT):
+            print(f"Loading checkpoint '{config.RESUME_CHECKPOINT}'")
+            checkpoint = torch.load(config.RESUME_CHECKPOINT, map_location=lambda storage, loc: storage)
+            config.START_EPOCH = checkpoint["epoch"]
+            best_psnr = checkpoint["best_psnr"]
+            model.load_state_dict(checkpoint["state_dict"])
+            optimizer.load_state_dict(checkpoint["optimizer"])
+            # scheduler.load_state_dict(checkpoint["scheduler"]) # If you add a scheduler
+            print(f"Loaded checkpoint '{config.RESUME_CHECKPOINT}' (epoch {checkpoint['epoch']})")
+        else:
+            print(f"No checkpoint found at '{config.RESUME_CHECKPOINT}'")
+    else:
+        print("No checkpoint specified. Training from scratch.")
 
     # Create a folder of super-resolution experiment results
-    samples_dir = os.path.join("samples", config.exp_name)
-    results_dir = os.path.join("results", config.exp_name)
-    if not os.path.exists(samples_dir):
-        os.makedirs(samples_dir)
-    if not os.path.exists(results_dir):
-        os.makedirs(results_dir)
+    
 
     # Create training process log file
-    writer = SummaryWriter(os.path.join("samples", "logs", config.exp_name))
+    writer = SummaryWriter(log_dir=config.LOGS_DIR) # Use LOGS_DIR from config
 
-    # Initialize the gradient scaler
-    scaler = amp.GradScaler()
+    scaler = amp.GradScaler(enabled=config.DEVICE.type == 'cuda') # Enable scaler only for CUDA
 
-    for epoch in range(config.start_epoch, config.epochs):
+    for epoch in range(config.START_EPOCH, config.EPOCHS):
         train(model, train_prefetcher, psnr_criterion, pixel_criterion, optimizer, epoch, scaler, writer)
-        _ = validate(model, valid_prefetcher, psnr_criterion, epoch, writer, "Valid")
-        psnr = validate(model, test_prefetcher, psnr_criterion, epoch, writer, "Test")
+        _ = validate(model, valid_prefetcher, psnr_criterion, epoch, writer, "Valid") # Validate on validation set
+        psnr = validate(model, test_prefetcher, psnr_criterion, epoch, writer, "Test")   # Validate on test set
         print("\n")
 
-        # Automatically save the model with the highest index
         is_best = psnr > best_psnr
         best_psnr = max(psnr, best_psnr)
-        torch.save({"epoch": epoch + 1,
-                    "best_psnr": best_psnr,
-                    "state_dict": model.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "scheduler": None},
-                   os.path.join(samples_dir, f"epoch_{epoch + 1}.pth.tar"))
+
+        checkpoint_data = {
+            "epoch": epoch + 1,
+            "best_psnr": best_psnr,
+            "state_dict": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            # "scheduler": scheduler.state_dict(), # If you add a scheduler
+        }
+        torch.save(checkpoint_data, os.path.join(config.MODEL_SAVE_DIR, f"epoch_{epoch + 1}.pth.tar"))
         if is_best:
-            shutil.copyfile(os.path.join(samples_dir, f"epoch_{epoch + 1}.pth.tar"), os.path.join(results_dir, "best.pth.tar"))
-        if (epoch + 1) == config.epochs:
-            shutil.copyfile(os.path.join(samples_dir, f"epoch_{epoch + 1}.pth.tar"), os.path.join(results_dir, "last.pth.tar"))
+            shutil.copyfile(os.path.join(config.MODEL_SAVE_DIR, f"epoch_{epoch + 1}.pth.tar"), 
+                            os.path.join(config.RESULTS_SAVE_DIR, "best.pth.tar"))
+        if (epoch + 1) == config.EPOCHS:
+            shutil.copyfile(os.path.join(config.MODEL_SAVE_DIR, f"epoch_{epoch + 1}.pth.tar"), 
+                            os.path.join(config.RESULTS_SAVE_DIR, "last.pth.tar"))
+    writer.close()
 
-
-def load_dataset() -> [CUDAPrefetcher, CUDAPrefetcher, CUDAPrefetcher]:
+def load_dataset() -> tuple[CUDAPrefetcher, CUDAPrefetcher, CUDAPrefetcher]:
     # Load train, test and valid datasets
-    train_datasets = TrainValidImageDataset(config.train_image_dir, config.image_size, config.upscale_factor, "Train")
-    valid_datasets = TrainValidImageDataset(config.valid_image_dir, config.image_size, config.upscale_factor, "Valid")
-    test_datasets = TestImageDataset(config.test_lr_image_dir, config.test_hr_image_dir, config.upscale_factor)
+    train_datasets = TrainValidImageDataset(config.TRAIN_HR_DIR,
+                                            config.TRAIN_LR_DIR,
+                                            config.IMAGE_SIZE,
+                                            config.UPSCALE_FACTOR,
+                                            "Train")
+    valid_datasets = TrainValidImageDataset(config.VALID_HR_DIR,
+                                            config.VALID_LR_DIR,
+                                            config.IMAGE_SIZE, # For validation, this is HR crop size
+                                            config.UPSCALE_FACTOR,
+                                            "Valid")
+    test_datasets = TestImageDataset(config.TEST_LR_DIR, config.TEST_HR_DIR)
 
     # Generator all dataloader
     train_dataloader = DataLoader(train_datasets,
-                                  batch_size=config.batch_size,
+                                  batch_size=config.BATCH_SIZE,
                                   shuffle=True,
-                                  num_workers=config.num_workers,
+                                  num_workers=config.NUM_WORKERS,
                                   pin_memory=True,
                                   drop_last=True,
-                                  persistent_workers=True)
+                                  persistent_workers=True if config.NUM_WORKERS > 0 else False)
     valid_dataloader = DataLoader(valid_datasets,
-                                  batch_size=config.batch_size,
+                                  batch_size=config.BATCH_SIZE,
                                   shuffle=False,
-                                  num_workers=config.num_workers,
+                                  num_workers=config.NUM_WORKERS,
                                   pin_memory=True,
                                   drop_last=False,
-                                  persistent_workers=True)
+                                  persistent_workers=True if config.NUM_WORKERS > 0 else False)
     test_dataloader = DataLoader(test_datasets,
                                  batch_size=1,
                                  shuffle=False,
@@ -130,36 +138,36 @@ def load_dataset() -> [CUDAPrefetcher, CUDAPrefetcher, CUDAPrefetcher]:
                                  persistent_workers=False)
 
     # Place all data on the preprocessing data loader
-    train_prefetcher = CUDAPrefetcher(train_dataloader, config.device)
-    valid_prefetcher = CUDAPrefetcher(valid_dataloader, config.device)
-    test_prefetcher = CUDAPrefetcher(test_dataloader, config.device)
+    train_prefetcher = CUDAPrefetcher(train_dataloader, config.DEVICE)
+    valid_prefetcher = CUDAPrefetcher(valid_dataloader, config.DEVICE)
+    test_prefetcher = CUDAPrefetcher(test_dataloader, config.DEVICE)
+
 
     return train_prefetcher, valid_prefetcher, test_prefetcher
 
 
 def build_model() -> nn.Module:
-    model = FSRCNN(config.upscale_factor).to(config.device)
-
+    model = FSRCNN(config.UPSCALE_FACTOR).to(config.DEVICE)
     return model
 
 
 def define_loss() -> [nn.MSELoss, nn.MSELoss]:
-    psnr_criterion = nn.MSELoss().to(config.device)
-    pixel_criterion = nn.MSELoss().to(config.device)
+    psnr_criterion = nn.MSELoss().to(config.DEVICE)
+    pixel_criterion = nn.MSELoss().to(config.DEVICE)
 
     return psnr_criterion, pixel_criterion
 
 
-def define_optimizer(model) -> optim.SGD:
+def define_optimizer(model : nn.Module) -> optim.SGD:
     optimizer = optim.SGD([{"params": model.feature_extraction.parameters()},
                            {"params": model.shrink.parameters()},
                            {"params": model.map.parameters()},
                            {"params": model.expand.parameters()},
-                           {"params": model.deconv.parameters(), "lr": config.model_lr * 0.1}],
-                          lr=config.model_lr,
-                          momentum=config.model_momentum,
-                          weight_decay=config.model_weight_decay,
-                          nesterov=config.model_nesterov)
+                           {"params": model.deconv.parameters(), "lr": config.MODEL_LR * 0.1}],
+                          lr=config.MODEL_LR,
+                          momentum=config.MODEL_MOMENTUM,
+                          weight_decay=config.MODEL_WEIGHT_DECAY,
+                          nesterov=config.MODEL_NESTEROV)
 
     return optimizer
 
@@ -188,14 +196,14 @@ def train(model, train_prefetcher, psnr_criterion, pixel_criterion, optimizer, e
         # measure data loading time
         data_time.update(time.time() - end)
 
-        lr = batch_data["lr"].to(config.device, non_blocking=True)
-        hr = batch_data["hr"].to(config.device, non_blocking=True)
+        lr = batch_data["lr"].to(config.DEVICE, non_blocking=True)
+        hr = batch_data["hr"].to(config.DEVICE, non_blocking=True)
 
         # Initialize the generator gradient
-        model.zero_grad()
+        optimizer.zero_grad()
 
         # Mixed precision training
-        with amp.autocast():
+        with amp.autocast(enabled=config.DEVICE.type == 'cuda'):
             sr = model(lr)
             loss = pixel_criterion(sr, hr)
 
@@ -215,7 +223,7 @@ def train(model, train_prefetcher, psnr_criterion, pixel_criterion, optimizer, e
         end = time.time()
 
         # Record training log information
-        if batch_index % config.print_frequency == 0:
+        if batch_index % config.PRINT_FREQUENCY == 0:
             # Writer Loss to file
             writer.add_scalar("Train/Loss", loss.item(), batch_index + epoch * batches + 1)
             progress.display(batch_index)
@@ -227,60 +235,46 @@ def train(model, train_prefetcher, psnr_criterion, pixel_criterion, optimizer, e
         batch_index += 1
 
 
-def validate(model, valid_prefetcher, psnr_criterion, epoch, writer, mode) -> float:
+def validate(model, data_prefetcher, psnr_criterion, epoch, writer, mode) -> float:
     batch_time = AverageMeter("Time", ":6.3f", Summary.NONE)
-    psnres = AverageMeter("PSNR", ":4.2f", Summary.AVERAGE)
-    progress = ProgressMeter(len(valid_prefetcher), [batch_time, psnres], prefix=f"{mode}: ")
+    psnres = AverageMeter(f"{mode} PSNR", ":4.2f", Summary.AVERAGE) # Use mode in name
+    progress = ProgressMeter(len(data_prefetcher), [batch_time, psnres], prefix=f"{mode}: ")
 
-    # Put the model in verification mode
     model.eval()
-
+    data_prefetcher.reset()
+    batch_data = data_prefetcher.next()
     batch_index = 0
-
-    # Calculate the time it takes to test a batch of data
     end = time.time()
+
     with torch.no_grad():
-        # enable preload
-        valid_prefetcher.reset()
-        batch_data = valid_prefetcher.next()
-
         while batch_data is not None:
-            # measure data loading time
-            lr = batch_data["lr"].to(config.device, non_blocking=True)
-            hr = batch_data["hr"].to(config.device, non_blocking=True)
+            lr = batch_data["lr"].to(config.DEVICE, non_blocking=True)
+            hr = batch_data["hr"].to(config.DEVICE, non_blocking=True)
 
-            # Mixed precision
-            with amp.autocast():
+            with amp.autocast(enabled=config.DEVICE.type == 'cuda'):
                 sr = model(lr)
+            
+            # Ensure tensors are float for PSNR calculation
+            mse = psnr_criterion(sr.float(), hr.float())
+            if mse.item() == 0: # Avoid log(0)
+                psnr_val = float('inf')
+            else:
+                psnr_tensor = 10. * torch.log10(1.0 / mse)
+                psnr_val = psnr_tensor.item()
+            
+            psnres.update(psnr_val, lr.size(0))
 
-            # measure accuracy and record loss
-            psnr = 10. * torch.log10(1. / psnr_criterion(sr, hr))
-            psnres.update(psnr.item(), lr.size(0))
-
-            # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
 
-            # Record training log information
-            if batch_index % config.print_frequency == 0:
+            if batch_index % config.PRINT_FREQUENCY == 0:
                 progress.display(batch_index)
-
-            # Preload the next batch of data
-            batch_data = valid_prefetcher.next()
-
-            # After a batch of data is calculated, add 1 to the number of batches
+            
+            batch_data = data_prefetcher.next()
             batch_index += 1
 
-    # Print average PSNR metrics
     progress.display_summary()
-
-    if mode == "Valid":
-        writer.add_scalar("Valid/PSNR", psnres.avg, epoch + 1)
-    elif mode == "Test":
-        writer.add_scalar("Test/PSNR", psnres.avg, epoch + 1)
-    else:
-        raise ValueError("Unsupported mode, please use `Valid` or `Test`.")
-
+    writer.add_scalar(f"{mode}/PSNR", psnres.avg, epoch + 1)
     return psnres.avg
 
 

@@ -1,67 +1,69 @@
-# Copyright 2021 Dakewe Biotech Corporation. All Rights Reserved.
-# Licensed under the Apache License, Version 2.0 (the "License");
-#   you may not use this file except in compliance with the License.
-#   You may obtain a copy of the License at
-#
-#       http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-import random
-
-import numpy as np
+# config.py
 import torch
-from torch.backends import cudnn
+import os
 
-# Random seed to maintain reproducible results
-random.seed(0)
-torch.manual_seed(0)
-np.random.seed(0)
-# Use GPU for training by default
-device = torch.device("cuda", 0)
-# Turning on when the image size does not change during training can speed up training
-cudnn.benchmark = True
-# Image magnification factor
-upscale_factor = 2
-# Current configuration parameter method
-mode = "train"
-# Experiment name, easy to save weights and log files
-exp_name = "fsrcnn_x2"
+# --- Dataset Paths ---
+# For Kaggle, these paths will typically start with "/kaggle/input/your-dataset-name/"
+# For local development, use your local paths.
+KAGGLE_INPUT_DIR = "/kaggle/input/updated-dataset/dataset" # CHANGE 'your-dataset-slug' if on Kaggle
+LOCAL_BASE_DIR = "dataset" # Your local base directory for the dataset
 
-if mode == "train":
-    # Dataset
-    train_image_dir = f"data/T91/FSRCNN/train"
-    valid_image_dir = f"data/T91/FSRCNN/valid"
-    test_lr_image_dir = f"data/Set5/LRbicx{upscale_factor}"
-    test_hr_image_dir = f"data/Set5/GTmod12"
+# Determine if running on Kaggle or locally (simple check)
+IS_KAGGLE = os.path.exists("/kaggle/input")
+BASE_DATA_PATH = KAGGLE_INPUT_DIR if IS_KAGGLE else LOCAL_BASE_DIR
 
-    image_size = 20
-    batch_size = 16
-    num_workers = 4
+# Training datasets
+TRAIN_HR_DIR = os.path.join(BASE_DATA_PATH, "train/HR")
+TRAIN_LR_DIR = os.path.join(BASE_DATA_PATH, "train/LR")
+# Validation datasets
+VALID_HR_DIR = os.path.join(BASE_DATA_PATH, "valid/HR")
+VALID_LR_DIR = os.path.join(BASE_DATA_PATH, "valid/LR")
+# Test datasets
+TEST_HR_DIR = os.path.join(BASE_DATA_PATH, "test/HR")
+TEST_LR_DIR = os.path.join(BASE_DATA_PATH, "test/LR")
 
-    # Incremental training and migration training
-    start_epoch = 0
-    resume = ""
+# --- Model Settings ---
+UPSCALE_FACTOR = 4  # Super-resolution upscale factor
+EXP_NAME = f"FSRCNN_x{UPSCALE_FACTOR}_custom" # Experiment name for outputs
 
-    # Total number of epochs
-    epochs = 3000
+# --- Output Paths ---
+# For Kaggle, writable directory is /kaggle/working/
+KAGGLE_OUTPUT_DIR = "/kaggle/working"
+LOCAL_OUTPUT_DIR = "." # Current directory for local outputs
 
-    # SGD optimizer parameter
-    model_lr = 1e-3
-    model_momentum = 0.9
-    model_weight_decay = 1e-4
-    model_nesterov = False
+BASE_OUTPUT_PATH = KAGGLE_OUTPUT_DIR if IS_KAGGLE else LOCAL_OUTPUT_DIR
 
-    print_frequency = 200
+MODEL_SAVE_DIR = os.path.join(BASE_OUTPUT_PATH, "samples", EXP_NAME) # For epoch checkpoints
+RESULTS_SAVE_DIR = os.path.join(BASE_OUTPUT_PATH, "results", EXP_NAME) # For best/last models
+LOGS_DIR = os.path.join(BASE_OUTPUT_PATH, "samples", "logs", EXP_NAME) # Tensorboard logs
+# For validate.py output of SR images
+SR_TEST_OUTPUT_DIR = os.path.join(BASE_OUTPUT_PATH, "results", "test_output", EXP_NAME)
 
-if mode == "valid":
-    # Test data address
-    lr_dir = f"data/Set5/LRbicx{upscale_factor}"
-    sr_dir = f"results/test/{exp_name}"
-    hr_dir = f"data/Set5/GTmod12"
+# Path to the model for validation/testing (update after training)
+# This will typically be 'best.pth.tar' from RESULTS_SAVE_DIR
+VALIDATE_MODEL_PATH = os.path.join(RESULTS_SAVE_DIR, "best.pth.tar")
 
-    model_path = f"results/{exp_name}/best.pth.tar"
+# --- Training Parameters ---
+IMAGE_SIZE = 64      # High-resolution image patch size for cropping.
+                       # LR patch size will be IMAGE_SIZE // UPSCALE_FACTOR.
+BATCH_SIZE = 16
+EPOCHS = 100           # Number of epochs to train
+START_EPOCH = 0        # Default starting epoch
+
+# Optimizer parameters
+MODEL_LR = 1e-3
+MODEL_MOMENTUM = 0.9
+MODEL_WEIGHT_DECAY = 1e-4
+MODEL_NESTEROV = False
+
+# --- Device Settings ---
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+NUM_WORKERS = 2 if torch.cuda.is_available() else 0 # Number of worker threads for data loading
+PIN_MEMORY = True if torch.cuda.is_available() else False
+
+# --- Resume Training ---
+# Path to checkpoint file for resuming training, e.g., os.path.join(MODEL_SAVE_DIR, "epoch_10.pth.tar")
+RESUME_CHECKPOINT = ""
+
+# --- Logging/Saving Frequency ---
+PRINT_FREQUENCY = 50 # Print training stats every N batches

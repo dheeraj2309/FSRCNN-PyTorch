@@ -20,6 +20,7 @@ import cv2
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
+from natsort import natsorted
 
 import imgproc
 
@@ -39,45 +40,62 @@ class TrainValidImageDataset(Dataset):
         mode (str): Data set loading method, the training data set is for data enhancement, and the verification data set is not for data enhancement.
     """
 
-    def __init__(self, image_dir: str, image_size: int, upscale_factor: int, mode: str) -> None:
+    def __init__(self, hr_image_dir: str, lr_image_dir: str, image_size: int, upscale_factor: int, mode: str) -> None:
         super(TrainValidImageDataset, self).__init__()
-        # Get all image file names in folder
-        self.image_file_names = [os.path.join(image_dir, image_file_name) for image_file_name in os.listdir(image_dir)]
-        # Specify the high-resolution image size, with equal length and width
-        self.image_size = image_size
-        # How many times the high-resolution image is the low-resolution image
+
+        self.hr_image_files = natsorted([os.path.join(hr_image_dir, f) for f in os.listdir(hr_image_dir) if os.path.isfile(os.path.join(hr_image_dir, f))])
+        # Assuming LR images have the SAME filenames as their HR counterparts
+        self.lr_image_files = [os.path.join(lr_image_dir, os.path.basename(hr_file)) for hr_file in self.hr_image_files]
+
+        # Sanity check: ensure all LR files exist
+        missing_lr = [f for f in self.lr_image_files if not os.path.exists(f)]
+        if missing_lr:
+            raise FileNotFoundError(f"Missing {len(missing_lr)} LR files. Example: {missing_lr[0]}")
+        if not self.hr_image_files:
+             raise FileNotFoundError(f"No HR images found in {hr_image_dir}")
+
+
+        self.image_size = image_size  # HR patch size
         self.upscale_factor = upscale_factor
-        # Load training dataset or test dataset
         self.mode = mode
 
-    def __getitem__(self, batch_index: int) -> [torch.Tensor, torch.Tensor]:
-        # Read a batch of image data
-        hr_image = cv2.imread(self.image_file_names[batch_index], cv2.IMREAD_UNCHANGED).astype(np.float32) / 255.
-        # Use high-resolution image to make low-resolution image
-        lr_image = imgproc.imresize(hr_image, 1 / self.upscale_factor)
+        if self.mode not in ["Train", "Valid"]:
+            raise ValueError("Mode must be 'Train' or 'Valid'.")
+
+    def __getitem__(self, batch_index: int) -> dict[str, torch.Tensor]:
+        hr_image_path = self.hr_image_files[batch_index]
+        lr_image_path = self.lr_image_files[batch_index]
+
+        try:
+            hr_image = cv2.imread(hr_image_path).astype(np.float32) / 255.
+            lr_image = cv2.imread(lr_image_path).astype(np.float32) / 255.
+        except Exception as e:
+            raise IOError(f"Error reading image: HR='{hr_image_path}', LR='{lr_image_path}'. Original error: {e}")
+
+
+        if hr_image is None: raise IOError(f"Failed to load HR image: {hr_image_path}")
+        if lr_image is None: raise IOError(f"Failed to load LR image: {lr_image_path}")
 
         if self.mode == "Train":
-            # Data augment
             lr_image, hr_image = imgproc.random_crop(lr_image, hr_image, self.image_size, self.upscale_factor)
+            # Optional: Add more augmentations like flips/rotations if desired
             lr_image, hr_image = imgproc.random_rotate(lr_image, hr_image, angles=[0, 90, 180, 270])
+            lr_image, hr_image = imgproc.random_horizontally_flip(lr_image, hr_image)
+            # lr_image, hr_image = imgproc.random_vertically_flip(lr_image, hr_image) # Often less common for SR
         elif self.mode == "Valid":
             lr_image, hr_image = imgproc.center_crop(lr_image, hr_image, self.image_size, self.upscale_factor)
-        else:
-            raise ValueError("Unsupported data processing model, please use `Train` or `Valid`.")
 
-        # Only extract the image data of the Y channel
+        # Convert BGR to YCbCr and extract Y channel (as FSRCNN typically works on luminance)
         lr_y_image = imgproc.bgr2ycbcr(lr_image, use_y_channel=True)
         hr_y_image = imgproc.bgr2ycbcr(hr_image, use_y_channel=True)
 
-        # Convert image data into Tensor stream format (PyTorch).
-        # Note: The range of input and output is between [0, 1]
         lr_y_tensor = imgproc.image2tensor(lr_y_image, range_norm=False, half=False)
         hr_y_tensor = imgproc.image2tensor(hr_y_image, range_norm=False, half=False)
 
         return {"lr": lr_y_tensor, "hr": hr_y_tensor}
 
     def __len__(self) -> int:
-        return len(self.image_file_names)
+        return len(self.hr_image_files)
 
 
 class TestImageDataset(Dataset):
@@ -89,32 +107,42 @@ class TestImageDataset(Dataset):
         upscale_factor (int): Image up scale factor.
     """
 
-    def __init__(self, test_lr_image_dir: str, test_hr_image_dir: str, upscale_factor: int) -> None:
+    def __init__(self, test_lr_image_dir: str, test_hr_image_dir: str) -> None:
         super(TestImageDataset, self).__init__()
-        # Get all image file names in folder
-        self.lr_image_file_names = [os.path.join(test_lr_image_dir, x) for x in os.listdir(test_lr_image_dir)]
-        self.hr_image_file_names = [os.path.join(test_hr_image_dir, x) for x in os.listdir(test_hr_image_dir)]
-        # How many times the high-resolution image is the low-resolution image
-        self.upscale_factor = upscale_factor
+        self.lr_image_files = natsorted([os.path.join(test_lr_image_dir, f) for f in os.listdir(test_lr_image_dir) if os.path.isfile(os.path.join(test_lr_image_dir, f))])
+        # Assuming LR images have the SAME filenames as their HR counterparts
+        self.hr_image_files = [os.path.join(test_hr_image_dir, os.path.basename(lr_file)) for lr_file in self.lr_image_files]
 
-    def __getitem__(self, batch_index: int) -> [torch.Tensor, torch.Tensor]:
-        # Read a batch of image data
-        lr_image = cv2.imread(self.lr_image_file_names[batch_index], cv2.IMREAD_UNCHANGED).astype(np.float32) / 255.
-        hr_image = cv2.imread(self.hr_image_file_names[batch_index], cv2.IMREAD_UNCHANGED).astype(np.float32) / 255.
+        missing_hr = [f for f in self.hr_image_files if not os.path.exists(f)]
+        if missing_hr:
+            raise FileNotFoundError(f"Missing {len(missing_hr)} HR files for testing. Example: {missing_hr[0]}")
+        if not self.lr_image_files:
+             raise FileNotFoundError(f"No LR images found in {test_lr_image_dir}")
 
-        # Only extract the image data of the Y channel
+    def __getitem__(self, batch_index: int) -> dict[str, torch.Tensor | str]:
+        lr_image_path = self.lr_image_files[batch_index]
+        hr_image_path = self.hr_image_files[batch_index]
+
+        try:
+            lr_image = cv2.imread(lr_image_path).astype(np.float32) / 255.
+            hr_image = cv2.imread(hr_image_path).astype(np.float32) / 255.
+        except Exception as e:
+            raise IOError(f"Error reading image: HR='{hr_image_path}', LR='{lr_image_path}'. Original error: {e}")
+
+        if lr_image is None: raise IOError(f"Failed to load LR image: {lr_image_path}")
+        if hr_image is None: raise IOError(f"Failed to load HR image: {hr_image_path}")
+
         lr_y_image = imgproc.bgr2ycbcr(lr_image, use_y_channel=True)
         hr_y_image = imgproc.bgr2ycbcr(hr_image, use_y_channel=True)
 
-        # Convert image data into Tensor stream format (PyTorch).
-        # Note: The range of input and output is between [0, 1]
         lr_y_tensor = imgproc.image2tensor(lr_y_image, range_norm=False, half=False)
         hr_y_tensor = imgproc.image2tensor(hr_y_image, range_norm=False, half=False)
 
-        return {"lr": lr_y_tensor, "hr": hr_y_tensor}
+        # Return filenames for reference during validation/testing if needed
+        return {"lr": lr_y_tensor, "hr": hr_y_tensor, "lr_path": lr_image_path, "hr_path": hr_image_path}
 
     def __len__(self) -> int:
-        return len(self.lr_image_file_names)
+        return len(self.lr_image_files)
 
 
 class PrefetchGenerator(threading.Thread):

@@ -29,7 +29,7 @@ class FSRCNN(nn.Module):
         super(FSRCNN, self).__init__()
         # Feature extraction layer.
         self.feature_extraction = nn.Sequential(
-            nn.Conv2d(1, 56, (5, 5), (1, 1), (2, 2)),
+            nn.Conv2d(1, 56, (3, 3), (1, 1), (2, 2)),
             nn.PReLU(56)
         )
 
