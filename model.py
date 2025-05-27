@@ -52,6 +52,10 @@ class FSRCNN(nn.Module):
             nn.Conv2d(12, 12, (3, 3), (1, 1), (1, 1)),
             nn.PReLU(12),
             nn.Conv2d(12, 12, (3, 3), (1, 1), (1, 1)),
+            nn.PReLU(12),
+            nn.Conv2d(12, 12, (3, 3), (1, 1), (1, 1)),
+            nn.PReLU(12),
+            nn.Conv2d(12, 12, (3, 3), (1, 1), (1, 1)),
             nn.PReLU(12)
         )
 
