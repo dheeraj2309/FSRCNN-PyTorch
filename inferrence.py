@@ -1,235 +1,224 @@
+# validate_single_model.py
 import os
 import cv2
-import torch
 import numpy as np
-from skimage.metrics import peak_signal_noise_ratio as psnr
-from skimage.metrics import structural_similarity as ssim
-from natsort import natsorted # For sorting filenames naturally
+import torch
+from natsort import natsorted
+from skimage.metrics import structural_similarity
 
-# --- Import your project-specific modules ---
+# --- Helper Imports (Ensure these files are in the same directory or Python path) ---
 try:
-    from model import FSRCNN
-    import imgproc
-    import config # Try to import config for UPSCALE_FACTOR and DEVICE
-    UPSCALE_FACTOR = config.UPSCALE_FACTOR
-    DEVICE = config.DEVICE
-    print(f"Loaded UPSCALE_FACTOR ({UPSCALE_FACTOR}) and DEVICE ({DEVICE}) from config.py")
-except ImportError:
-    print("Warning: Could not import FSRCNN, imgproc, or config.py. "
-          "Ensure model.py and imgproc.py are in the current directory. "
-          "UPSCALE_FACTOR and DEVICE will be set to defaults if config.py is missing.")
-    UPSCALE_FACTOR = 4
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    from model import FSRCNN # Assumes model.py is in the same directory
+    import imgproc          # Assumes imgproc.py is in the same directory
+except ImportError as e:
+    print(f"Error importing helper modules (model.py, imgproc.py): {e}")
+    print("Please ensure model.py and imgproc.py are in the same directory as this script, or in your PYTHONPATH.")
+    exit(1)
+# --- Configuration ---
+# : Update these paths according to your Kaggle environment or local setup
+MODEL_PATH = "fsrcnn_x4-T91-97a30bfb.pth.tar"  # Path to your .pth.tar model file
+UPSCALE_FACTOR = 4  # The model filename "fsrcnn_x4" suggests x4
 
-# --- Configuration for Inference ---
+# Example Kaggle paths:
+# LR_IMAGE_DIR = "/kaggle/input/your-dataset-name/lr_images"
+# HR_IMAGE_DIR = "/kaggle/input/your-dataset-name/hr_images"
+# SR_OUTPUT_DIR = "/kaggle/working/sr_output_images" # Output in Kaggle's writable directory
 
-# 1. PATH TO YOUR BEST TRAINED MODEL
-MODEL_NAME_FROM_TRAINING = f"FSRCNN_x{UPSCALE_FACTOR}_custom" # Should match EXP_NAME
-MODEL_WEIGHTS_PATH = f"/kaggle/working/results/{MODEL_NAME_FROM_TRAINING}/best.pth.tar"
+# Example local paths:
+LR_IMAGE_DIR = "/kaggle/input/updated-dataset/dataset/test/LR" # MODIFY THIS
+HR_IMAGE_DIR = "/kaggle/input/updated-dataset/dataset/test/HR"     # MODIFY THIS
+SR_OUTPUT_DIR = "/kaggle/working/output_sr" # MODIFY THIS
 
-# 2. DIRECTORIES FOR NEW DATASET
-# Replace 'your-new-dataset-slug' and paths accordingly.
-NEW_DATASET_BASE_DIR = "/kaggle/input/set5test/Set5/" # MODIFY THIS
-NEW_LR_SUBDIR = "downx4/"  # Subdirectory for LR images within NEW_DATASET_BASE_DIR
-NEW_HR_SUBDIR = "Set5/"  # Subdirectory for HR images within NEW_DATASET_BASE_DIR
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+SAVE_SR_IMAGES = True # Set to False if you don't want to save SR images
 
-NEW_LR_DATASET_DIR = os.path.join(NEW_DATASET_BASE_DIR, NEW_LR_SUBDIR)
-NEW_HR_DATASET_DIR = os.path.join(NEW_DATASET_BASE_DIR, NEW_HR_SUBDIR) # Will be used if available
-
-# 3. DIRECTORY TO SAVE SUPER-RESOLVED (SR) OUTPUT IMAGES
-SR_OUTPUT_DIR = f"/kaggle/working/sr_output_on_new_dataset_{MODEL_NAME_FROM_TRAINING}/"
-
-# 4. INFERENCE OPTIONS
-USE_HALF_PRECISION = True if DEVICE.type == 'cuda' else False
-EVALUATE_PERFORMANCE = True  # Set to True to calculate PSNR/SSIM against HR images
-USE_HR_COLOR_CHANNELS = True # Set to True to use color from HR images (better quality)
-                               # If False, will use upsampled LR color.
-                               # This is only effective if HR images are found.
-
-# --- Helper function for evaluation ---
-def calculate_metrics(img_true_y, img_pred_y):
-    """Calculates PSNR and SSIM on the Y channel (luminance).
-    Assumes images are numpy arrays, Y channel, range [0, 1] or [0, 255].
-    """
-    # Ensure images are in the range [0, 255] for skimage metrics if they are not already
-    if img_true_y.max() <= 1.0:
-        img_true_y = (img_true_y * 255.0).astype(np.uint8)
-    if img_pred_y.max() <= 1.0:
-        img_pred_y = (img_pred_y * 255.0).astype(np.uint8)
-
-    current_psnr = psnr(img_true_y, img_pred_y, data_range=255)
-    current_ssim = ssim(img_true_y, img_pred_y, data_range=255, channel_axis=None, win_size=7) # Adjusted for single channel Y
-    return current_psnr, current_ssim
-
-def main():
-    global EVALUATE_PERFORMANCE, USE_HR_COLOR_CHANNELS # Allow modification
-    print(f"Starting inference with the following settings:")
-    print(f"  Model Weights: {MODEL_WEIGHTS_PATH}")
-    print(f"  New LR Dataset: {NEW_LR_DATASET_DIR}")
-    print(f"  New HR Dataset (for color/eval): {NEW_HR_DATASET_DIR}")
-    print(f"  SR Output Directory: {SR_OUTPUT_DIR}")
-    print(f"  Upscale Factor: {UPSCALE_FACTOR}")
-    print(f"  Device: {DEVICE}")
-    print(f"  Use Half Precision: {USE_HALF_PRECISION}")
-    print(f"  Evaluate Performance (PSNR/SSIM): {EVALUATE_PERFORMANCE}")
-    print(f"  Use HR Color Channels: {USE_HR_COLOR_CHANNELS}")
-
-    # --- Sanity Checks ---
-    if not os.path.exists(MODEL_WEIGHTS_PATH):
-        print(f"ERROR: Model weights not found at '{MODEL_WEIGHTS_PATH}'")
+def main() -> None:
+    if not os.path.exists(MODEL_PATH):
+        print(f"Error: Model file not found at {MODEL_PATH}")
         return
-    if not os.path.isdir(NEW_LR_DATASET_DIR):
-        print(f"ERROR: New LR dataset directory not found at '{NEW_LR_DATASET_DIR}'")
+    if not os.path.isdir(LR_IMAGE_DIR):
+        print(f"Error: LR image directory not found at {LR_IMAGE_DIR}")
         return
-    if (EVALUATE_PERFORMANCE or USE_HR_COLOR_CHANNELS) and not os.path.isdir(NEW_HR_DATASET_DIR):
-        print(f"WARNING: New HR dataset directory not found at '{NEW_HR_DATASET_DIR}'. "
-              "Will proceed without HR color channels and performance evaluation.")
-        EVALUATE_PERFORMANCE = False
-        USE_HR_COLOR_CHANNELS = False
+    if not os.path.isdir(HR_IMAGE_DIR):
+        print(f"Error: HR image directory not found at {HR_IMAGE_DIR}")
+        return
 
-
-    # --- Create Output Directory ---
     os.makedirs(SR_OUTPUT_DIR, exist_ok=True)
-    print(f"Created output directory: {SR_OUTPUT_DIR}")
 
-    # --- Load Model ---
-    print("Loading FSRCNN model...")
+    # Initialize the super-resolution model
     model = FSRCNN(upscale_factor=UPSCALE_FACTOR).to(DEVICE)
-    try:
-        checkpoint = torch.load(MODEL_WEIGHTS_PATH, map_location=lambda storage, loc: storage)
-        if "state_dict" in checkpoint: model.load_state_dict(checkpoint["state_dict"])
-        elif "model_state_dict" in checkpoint: model.load_state_dict(checkpoint["model_state_dict"])
-        else: model.load_state_dict(checkpoint)
-        print(f"Successfully loaded model weights from '{MODEL_WEIGHTS_PATH}'.")
-    except Exception as e:
-        print(f"ERROR: Failed to load model weights: {e}")
-        return
+    print(f"Building FSRCNN model (x{UPSCALE_FACTOR}) successfully.")
+
+    # Load the super-resolution model weights
+    print(f"Loading model weights from `{os.path.abspath(MODEL_PATH)}`...")
+    checkpoint = torch.load(MODEL_PATH, map_location=lambda storage, loc: storage)
+
+    # Check if the checkpoint is a dict and contains 'state_dict' (common practice)
+    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+        model_state_dict = checkpoint["state_dict"]
+        # FSRCNN might save the model directly or within a module (e.g. if DataParallel was used)
+        # This attempts to load it correctly if it was saved with a 'module.' prefix
+        if all(key.startswith("module.") for key in model_state_dict.keys()):
+             model_state_dict = {k.replace("module.", ""): v for k, v in model_state_dict.items()}
+        model.load_state_dict(model_state_dict)
+        print("Model weights loaded successfully from checkpoint['state_dict'].")
+    elif isinstance(checkpoint, dict) and "model_state_dict" in checkpoint: # another common key
+        model.load_state_dict(checkpoint["model_state_dict"])
+        print("Model weights loaded successfully from checkpoint['model_state_dict'].")
+    else: # Assume the checkpoint *is* the state_dict itself
+        model.load_state_dict(checkpoint)
+        print("Model weights loaded successfully (assumed checkpoint is state_dict).")
+
+
     model.eval()
-    if USE_HALF_PRECISION:
-        model.half()
-        print("Using half-precision for inference.")
+    # Optional: Use half-precision for inference on CUDA for potential speedup
+    # use_half_precision_inference = DEVICE.type == 'cuda'
+    # if use_half_precision_inference:
+    #     model.half()
 
-    # --- Process Images ---
-    lr_image_files = natsorted([
-        f for f in os.listdir(NEW_LR_DATASET_DIR)
-        if os.path.isfile(os.path.join(NEW_LR_DATASET_DIR, f))
-           and f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'))
-    ])
-
-    if not lr_image_files:
-        print(f"No image files found in '{NEW_LR_DATASET_DIR}'.")
-        return
-
-    print(f"Found {len(lr_image_files)} LR images to process.")
     total_psnr = 0.0
     total_ssim = 0.0
-    processed_count = 0
+    
+    lr_image_files = natsorted([
+        os.path.join(LR_IMAGE_DIR, f) for f in os.listdir(LR_IMAGE_DIR) 
+        if os.path.isfile(os.path.join(LR_IMAGE_DIR, f)) and f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'))
+    ])
+    
+    if not lr_image_files:
+        print(f"No LR images found in {LR_IMAGE_DIR}")
+        return
 
-    for image_filename in lr_image_files:
-        lr_image_path = os.path.join(NEW_LR_DATASET_DIR, image_filename)
-        hr_image_path = os.path.join(NEW_HR_DATASET_DIR, image_filename) # Assumes HR has same name
-        sr_image_path = os.path.join(SR_OUTPUT_DIR, image_filename)
+    total_files_processed = 0
 
-        print(f"Processing: {lr_image_path} -> {sr_image_path}")
+    for lr_image_path in lr_image_files:
+        base_name = os.path.basename(lr_image_path)
+        hr_image_path = os.path.join(HR_IMAGE_DIR, base_name)
+        sr_image_path = os.path.join(SR_OUTPUT_DIR, base_name)
 
-        try:
-            lr_bgr_image = cv2.imread(lr_image_path)
-            if lr_bgr_image is None:
-                print(f"Warning: Could not read LR image {lr_image_path}. Skipping.")
-                continue
-            lr_bgr_image_float = lr_bgr_image.astype(np.float32) / 255.0
-            lr_y_image = imgproc.bgr2ycbcr(lr_bgr_image_float, use_y_channel=True)
-            lr_y_tensor = imgproc.image2tensor(lr_y_image, range_norm=False, half=USE_HALF_PRECISION)
-            lr_y_tensor = lr_y_tensor.unsqueeze(0).to(DEVICE)
+        if not os.path.exists(hr_image_path):
+            print(f"Warning: Corresponding HR image not found for {lr_image_path} at {hr_image_path}. Skipping.")
+            continue
 
-            with torch.no_grad():
-                sr_y_tensor = model(lr_y_tensor)
+        print(f"Processing `{lr_image_path}`...")
+        
+        # Load images as BGR, convert to float32 [0, 1]
+        lr_image_bgr = cv2.imread(lr_image_path).astype(np.float32) / 255.0
+        hr_image_bgr = cv2.imread(hr_image_path).astype(np.float32) / 255.0
 
-            sr_y_tensor = sr_y_tensor.float().clamp_(0.0, 1.0)
-            sr_y_image_numpy = imgproc.tensor2image(sr_y_tensor.cpu(), range_norm=False, half=False)
-            sr_y_image_numpy_float = sr_y_image_numpy.astype(np.float32) / 255.0 # Y channel, range [0,1]
+        if lr_image_bgr is None:
+            print(f"Warning: Could not read LR image {lr_image_path}. Skipping.")
+            continue
+        if hr_image_bgr is None:
+            print(f"Warning: Could not read HR image {hr_image_path}. Skipping.")
+            continue
+        
+        # Extract Y channel for processing (FSRCNN typically works on Y channel)
+        lr_y_image = imgproc.bgr2ycbcr(lr_image_bgr, use_y_channel=True) # Returns float32 [0,1]
+        hr_y_image = imgproc.bgr2ycbcr(hr_image_bgr, use_y_channel=True) # Returns float32 [0,1]
 
-            # --- Handle HR image for color and/or evaluation ---
-            hr_bgr_image_float = None
-            hr_y_image_float = None
-            hr_available = False
+        # Convert LR Y image to tensor
+        lr_y_tensor = imgproc.image2tensor(lr_y_image, range_norm=False, half=False).to(DEVICE).unsqueeze_(0)
+        # if use_half_precision_inference:
+        #     lr_y_tensor = lr_y_tensor.half()
+        
+        with torch.no_grad():
+            sr_y_tensor = model(lr_y_tensor)
+        
+        # Ensure sr_y_tensor is float, clamped to [0, 1]
+        sr_y_tensor = sr_y_tensor.float().clamp_(0.0, 1.0)
 
-            if os.path.exists(hr_image_path):
-                hr_bgr_image = cv2.imread(hr_image_path)
-                if hr_bgr_image is not None:
-                    hr_available = True
-                    hr_bgr_image_float = hr_bgr_image.astype(np.float32) / 255.0
-                    if EVALUATE_PERFORMANCE:
-                        hr_y_image_float = imgproc.bgr2ycbcr(hr_bgr_image_float, use_y_channel=True)
-                else:
-                    print(f"Warning: Could read HR image {hr_image_path}, but it's empty. Proceeding without HR.")
-            elif EVALUATE_PERFORMANCE or USE_HR_COLOR_CHANNELS:
-                 print(f"Warning: Corresponding HR image not found for {image_filename} at {hr_image_path}. "
-                       "Cannot use HR color or evaluate for this image.")
+        # Prepare HR Y tensor for comparison (already float32 [0,1])
+        hr_y_tensor_orig = imgproc.image2tensor(hr_y_image, range_norm=False, half=False).to(DEVICE).unsqueeze_(0)
+        
+        # Crop HR to match SR spatial dimensions if necessary (FSRCNN should maintain size)
+        h_sr, w_sr = sr_y_tensor.shape[2], sr_y_tensor.shape[3]
+        h_hr, w_hr = hr_y_tensor_orig.shape[2], hr_y_tensor_orig.shape[3]
 
+        # FSRCNN output size is (H_lr * upscale, W_lr * upscale).
+        # If HR images are exactly that size, no cropping is needed.
+        # Otherwise, crop the HR image from the center or top-left to match SR.
+        # For simplicity, we'll assume HR is either same size or needs top-left cropping.
+        if h_hr != h_sr or w_hr != w_sr:
+            print(f"Warning: HR image dimensions ({h_hr}x{w_hr}) differ from SR image dimensions ({h_sr}x{w_sr}) for {base_name}. Cropping HR for metrics.")
+            hr_y_tensor_cropped = hr_y_tensor_orig[:, :, :h_sr, :w_sr]
+        else:
+            hr_y_tensor_cropped = hr_y_tensor_orig
+            
+        # --- Calculate PSNR on Y channel ---
+        mse = torch.mean((sr_y_tensor - hr_y_tensor_cropped) ** 2)
+        if mse.item() == 0:
+            current_psnr = float('inf')
+        else:
+            current_psnr = 10. * torch.log10(1.0 / mse).item()
+        total_psnr += current_psnr
+        
+        # --- Calculate SSIM on Y channel ---
+        # Convert tensors to numpy arrays, shape [H, W], range [0, 1]
+        sr_y_numpy = sr_y_tensor.squeeze(0).squeeze(0).cpu().numpy()
+        hr_y_numpy_cropped = hr_y_tensor_cropped.squeeze(0).squeeze(0).cpu().numpy()
+        
+        # Clip again just in case of numerical precision issues, though clamping sr_y_tensor helps
+        sr_y_numpy = np.clip(sr_y_numpy, 0.0, 1.0)
+        hr_y_numpy_cropped = np.clip(hr_y_numpy_cropped, 0.0, 1.0)
+        
+        win_size = min(7, sr_y_numpy.shape[0], sr_y_numpy.shape[1])
+        if win_size % 2 == 0: win_size -= 1 # Ensure win_size is odd
+        
+        current_ssim = 0.0
+        if win_size >= 1: # ssim requires win_size >= 1
+            try:
+                current_ssim = structural_similarity(hr_y_numpy_cropped, sr_y_numpy, 
+                                                     data_range=1.0, win_size=win_size,
+                                                     gaussian_weights=True, # Often recommended
+                                                     sigma=1.5, # Often used with gaussian_weights
+                                                     use_sample_covariance=False) # Default for skimage >= 0.16
+            except ValueError as e:
+                 print(f"Could not calculate SSIM for {base_name} (win_size={win_size}, shape={sr_y_numpy.shape}): {e}. Setting SSIM to 0.")
+        else:
+            print(f"SSIM win_size for {base_name} is < 1 ({win_size}). Setting SSIM to 0.")
+        total_ssim += current_ssim
+        
+        total_files_processed += 1
+        print(f"  Metrics for {base_name}: PSNR: {current_psnr:6.2f} dB, SSIM: {current_ssim:7.4f}")
 
-            # --- Reconstruct Color SR Image ---
-            target_h, target_w = sr_y_image_numpy_float.shape[:2]
+        # --- Save SR image (reconstruct with Cb,Cr from upscaled LR or original HR) ---
+        if SAVE_SR_IMAGES:
+            # Convert SR Y channel tensor back to uint8 NumPy image [0, 255]
+            sr_y_image_save = imgproc.tensor2image(sr_y_tensor.cpu(), range_norm=False, half=False) 
+            sr_y_image_float = sr_y_image_save.astype(np.float32) / 255.0 # Back to float [0,1] for merging
 
-            if USE_HR_COLOR_CHANNELS and hr_available and hr_bgr_image_float is not None:
-                print(f"  Using color channels from HR image: {hr_image_path}")
-                _, hr_cb, hr_cr = cv2.split(imgproc.bgr2ycbcr(hr_bgr_image_float, use_y_channel=False))
-                # Resize HR's Cb, Cr to match SR Y's dimensions if necessary (should be close)
-                if hr_cb.shape[0] != target_h or hr_cb.shape[1] != target_w:
-                    color_cb = cv2.resize(hr_cb, (target_w, target_h), interpolation=cv2.INTER_CUBIC)
-                    color_cr = cv2.resize(hr_cr, (target_w, target_h), interpolation=cv2.INTER_CUBIC)
-                else:
-                    color_cb = hr_cb
-                    color_cr = hr_cr
+            # Get Cb, Cr channels. For best color quality, use original HR image's CbCr if available and same size.
+            # Otherwise, upscale LR's CbCr. Here, we use HR's CbCr.
+            _, hr_cb_orig, hr_cr_orig = cv2.split(imgproc.bgr2ycbcr(hr_image_bgr, use_y_channel=False))
+            
+            # Resize Cb, Cr from HR to match SR Y channel's dimensions
+            target_h, target_w = sr_y_image_float.shape[:2] # Should be h_sr, w_sr
+            if hr_cb_orig.shape[0] != target_h or hr_cb_orig.shape[1] != target_w:
+                hr_cb_resized = cv2.resize(hr_cb_orig, (target_w, target_h), interpolation=cv2.INTER_CUBIC)
+                hr_cr_resized = cv2.resize(hr_cr_orig, (target_w, target_h), interpolation=cv2.INTER_CUBIC)
             else:
-                if USE_HR_COLOR_CHANNELS and not hr_available:
-                     print(f"  HR color requested but HR image not found. Falling back to upsampled LR color.")
-                print(f"  Using upsampled color channels from LR image: {lr_image_path}")
-                _, lr_cb, lr_cr = cv2.split(imgproc.bgr2ycbcr(lr_bgr_image_float, use_y_channel=False))
-                color_cb = cv2.resize(lr_cb, (target_w, target_h), interpolation=cv2.INTER_CUBIC)
-                color_cr = cv2.resize(lr_cr, (target_w, target_h), interpolation=cv2.INTER_CUBIC)
+                hr_cb_resized = hr_cb_orig
+                hr_cr_resized = hr_cr_orig
+                
+            sr_ycbcr_image = cv2.merge([sr_y_image_float, hr_cb_resized, hr_cr_resized])
+            sr_bgr_image = imgproc.ycbcr2bgr(sr_ycbcr_image) # Converts YCbCr [0,1] to BGR [0,1]
+            cv2.imwrite(sr_image_path, np.clip(sr_bgr_image * 255.0, 0, 255).astype(np.uint8))
+            # print(f"  Saved SR image to {sr_image_path}")
 
-            sr_ycbcr_image = cv2.merge([sr_y_image_numpy_float, color_cb, color_cr])
-            sr_bgr_output_image = imgproc.ycbcr2bgr(sr_ycbcr_image)
-            output_image_to_save = np.clip(sr_bgr_output_image * 255.0, 0, 255).astype(np.uint8)
-            cv2.imwrite(sr_image_path, output_image_to_save)
-
-            # --- Evaluate Performance if HR is available ---
-            if EVALUATE_PERFORMANCE and hr_available and hr_y_image_float is not None:
-                # Crop HR Y to match SR Y dimensions for fair comparison
-                h_sr, w_sr = sr_y_image_numpy_float.shape[:2]
-                hr_y_cropped = hr_y_image_float[:h_sr, :w_sr]
-
-                current_psnr, current_ssim = calculate_metrics(hr_y_cropped, sr_y_image_numpy_float)
-                print(f"  Metrics for {image_filename}: PSNR: {current_psnr:.2f}dB, SSIM: {current_ssim:.4f}")
-                total_psnr += current_psnr
-                total_ssim += current_ssim
-                processed_count += 1
-
-        except Exception as e:
-            print(f"Error processing image {lr_image_path}: {e}")
-            import traceback
-            traceback.print_exc()
-
-    print("-" * 30)
-    print(f"Inference complete. Super-resolved images saved to '{SR_OUTPUT_DIR}'.")
-
-    if EVALUATE_PERFORMANCE and processed_count > 0:
-        avg_psnr = total_psnr / processed_count
-        avg_ssim = total_ssim / processed_count
-        print(f"\nAverage Performance Metrics over {processed_count} images:")
-        print(f"  Average PSNR: {avg_psnr:.2f}dB")
-        print(f"  Average SSIM: {avg_ssim:.4f}")
-    elif EVALUATE_PERFORMANCE:
-        print("\nNo images were successfully processed with corresponding HR images for evaluation.")
+    if total_files_processed > 0:
+        avg_psnr = total_psnr / total_files_processed
+        avg_ssim = total_ssim / total_files_processed
+        print("-" * 40)
+        print(f"Validation Summary ({total_files_processed} images):")
+        print(f"  Average PSNR: {avg_psnr:6.2f} dB")
+        print(f"  Average SSIM: {avg_ssim:7.4f}")
+        print("-" * 40)
+    else:
+        print("\nNo images were processed successfully to calculate PSNR/SSIM.")
 
 if __name__ == "__main__":
-    # Ensure skimage is available if evaluating
-    if EVALUATE_PERFORMANCE:
-        try:
-            import skimage
-        except ImportError:
-            print("ERROR: scikit-image is not installed. Please install it for PSNR/SSIM evaluation: pip install scikit-image")
-            print("Alternatively, set EVALUATE_PERFORMANCE = False in the script.")
-            exit()
-    main()
+    # Verify FSRCNN and imgproc are available before running main
+    if 'FSRCNN' not in globals() or 'imgproc' not in globals():
+        print("Exiting due to missing FSRCNN or imgproc modules.")
+    else:
+        main()
